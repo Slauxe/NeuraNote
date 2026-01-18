@@ -1,7 +1,24 @@
 import Slider from "@react-native-community/slider";
-import React, { useMemo, useRef, useState } from "react";
-import { Modal, Platform, Pressable, Text, View } from "react-native";
+import {
+  Eraser,
+  LassoSelect,
+  MoreVertical,
+  Palette,
+  PenLine,
+  SlidersHorizontal,
+  Trash2,
+} from "lucide-react-native";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Modal,
+  PanResponder,
+  Platform,
+  Pressable,
+  Text,
+  View,
+} from "react-native";
 import Svg, {
+  Circle,
   Defs,
   G,
   LinearGradient,
@@ -23,9 +40,16 @@ type Stroke = {
   bbox: { minX: number; minY: number; maxX: number; maxY: number };
 };
 
-const WORKSPACE_BG = "#e9e9e9";
+// Theme
+const WORKSPACE_BG = "#0B1026"; // deep violet/blue
+const TOPBAR_BG = "rgba(15, 22, 56, 0.92)";
+const TOPBAR_BORDER = "rgba(255,255,255,0.10)";
+const BTN_BG = "rgba(255,255,255,0.10)";
+const BTN_BG_ACTIVE = "#FFFFFF";
+const BTN_BORDER = "rgba(255,255,255,0.14)";
+
 const PAGE_BG = "#ffffff";
-const PAGE_BORDER = "rgba(0,0,0,0.10)";
+const PAGE_BORDER = "rgba(255,255,255,0.12)";
 
 const ERASER_MULT = 10;
 
@@ -179,8 +203,143 @@ function uid() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
+/**
+ * Real eraser: split a stroke into runs of points that are OUTSIDE the eraser circle.
+ * Returns:
+ * - null if untouched
+ * - [] if fully erased
+ * - [ ...newStrokes ] if partially erased (may split)
+ */
+function splitStrokeByEraserCircle(s: Stroke, center: Point, radius: number) {
+  const r2 = radius * radius;
+
+  // Quick bbox check in page coords
+  const sb = {
+    minX: s.bbox.minX + s.dx,
+    minY: s.bbox.minY + s.dy,
+    maxX: s.bbox.maxX + s.dx,
+    maxY: s.bbox.maxY + s.dy,
+  };
+  const eb = {
+    minX: center.x - radius,
+    minY: center.y - radius,
+    maxX: center.x + radius,
+    maxY: center.y + radius,
+  };
+  if (!bboxOverlap(sb, eb)) return null;
+
+  const runs: Point[][] = [];
+  let cur: Point[] = [];
+  let anyErased = false;
+
+  // IMPORTANT: iterate original points (keeps smoothness)
+  for (const p of s.points) {
+    const px = p.x + s.dx;
+    const py = p.y + s.dy;
+    const dx = px - center.x;
+    const dy = py - center.y;
+    const inside = dx * dx + dy * dy <= r2;
+
+    if (inside) {
+      anyErased = true;
+      if (cur.length > 0) {
+        runs.push(cur);
+        cur = [];
+      }
+    } else {
+      cur.push(p);
+    }
+  }
+  if (cur.length > 0) runs.push(cur);
+
+  if (!anyErased) return null;
+
+  const next: Stroke[] = [];
+  for (const pts of runs) {
+    if (pts.length < MIN_POINTS_TO_SAVE) continue;
+
+    const d = pointsToSmoothPath(pts);
+    if (!d.trim()) continue;
+
+    next.push({
+      ...s,
+      id: uid(),
+      points: pts,
+      d,
+      bbox: computeBBox(pts),
+    });
+  }
+
+  return next;
+}
+
+// Small icon-only button
+function IconButton({
+  onPress,
+  disabled,
+  active,
+  children,
+  bgOverride,
+  borderOverride,
+}: {
+  onPress: () => void;
+  disabled?: boolean;
+  active?: boolean;
+  children: React.ReactNode;
+  bgOverride?: string;
+  borderOverride?: string;
+}) {
+  const bg = bgOverride ?? (active ? BTN_BG_ACTIVE : BTN_BG);
+  const border = borderOverride ?? BTN_BORDER;
+
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      style={{
+        width: 46,
+        height: 46,
+        borderRadius: 14,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: bg,
+        borderWidth: 1,
+        borderColor: border,
+        opacity: disabled ? 0.5 : 1,
+      }}
+    >
+      {children}
+    </Pressable>
+  );
+}
+
+function clamp(n: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, n));
+}
+
 export default function Index() {
   const [tool, setTool] = useState<"pen" | "eraser" | "lasso">("pen");
+
+  // Toolbar drag + orientation
+  const [toolbarOrientation, setToolbarOrientation] = useState<
+    "horizontal" | "vertical"
+  >("horizontal");
+  const [isToolbarModeOpen, setIsToolbarModeOpen] = useState(false);
+
+  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
+  const [toolbarSize, setToolbarSize] = useState({ w: 0, h: 0 });
+
+  // toolbar position (absolute)
+  const [toolbarPos, setToolbarPos] = useState({ x: 12, y: 12 });
+
+  const toolbarPosRef = useRef(toolbarPos);
+  useEffect(() => {
+    toolbarPosRef.current = toolbarPos;
+  }, [toolbarPos]);
+
+  // double-tap on the 3-dot handle
+  const lastHandleTapMs = useRef<number>(0);
+  const movedDuringDrag = useRef(false);
 
   // Shared size
   const [sizeIndex, setSizeIndex] = useState(0);
@@ -189,7 +348,7 @@ export default function Index() {
 
   // Pen color
   const [hue, setHue] = useState(0);
-  const [penColor, setPenColor] = useState<string>(colorFromHue(0));
+  const [penColor, setPenColor] = useState<string>("#111111");
   const [isColorModalOpen, setIsColorModalOpen] = useState(false);
 
   // Saved slots
@@ -199,6 +358,15 @@ export default function Index() {
   // Effective settings depend on tool
   const activeColor = tool === "eraser" ? PAGE_BG : penColor;
   const activeWidth = tool === "eraser" ? penWidth * ERASER_MULT : penWidth;
+  const eraserRadius = activeWidth / 2;
+
+  // Option B refs (latest brush settings)
+  const activeColorRef = useRef(activeColor);
+  const activeWidthRef = useRef(activeWidth);
+  useEffect(() => {
+    activeColorRef.current = activeColor;
+    activeWidthRef.current = activeWidth;
+  }, [activeColor, activeWidth]);
 
   // Zoom
   const [zoom, setZoom] = useState(1);
@@ -207,6 +375,10 @@ export default function Index() {
   // Strokes + current stroke
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [currentPath, setCurrentPath] = useState("");
+
+  // Eraser cursor (outline)
+  const [eraserCursor, setEraserCursor] = useState<Point | null>(null);
+  const lastEraserPoint = useRef<Point | null>(null);
 
   // Lasso UI
   const [lassoPath, setLassoPath] = useState("");
@@ -232,6 +404,60 @@ export default function Index() {
   // rAF throttling (web)
   const rafId = useRef<number | null>(null);
   const pending = useRef(false);
+
+  // ---- Toolbar constraints
+  const clampToolbarPos = (x: number, y: number) => {
+    const maxX = Math.max(0, containerSize.w - toolbarSize.w);
+    const maxY = Math.max(0, containerSize.h - toolbarSize.h);
+    return { x: clamp(x, 0, maxX), y: clamp(y, 0, maxY) };
+  };
+
+  // When orientation changes, size changes -> keep toolbar in view
+  useEffect(() => {
+    setToolbarPos((p) => clampToolbarPos(p.x, p.y));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    toolbarOrientation,
+    containerSize.w,
+    containerSize.h,
+    toolbarSize.w,
+    toolbarSize.h,
+  ]);
+
+  // ---- Toolbar drag handle PanResponder (drag only on 3-dot handle)
+  const handlePanResponder = useMemo(() => {
+    return PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+
+      onPanResponderGrant: () => {
+        movedDuringDrag.current = false;
+      },
+
+      onPanResponderMove: (_evt, gesture) => {
+        // gesture.dx/dy are cumulative from grant
+        if (Math.abs(gesture.dx) + Math.abs(gesture.dy) > 3) {
+          movedDuringDrag.current = true;
+        }
+
+        const base = toolbarPosRef.current;
+        const next = clampToolbarPos(base.x + gesture.dx, base.y + gesture.dy);
+        setToolbarPos(next);
+      },
+
+      onPanResponderRelease: () => {
+        // If it wasn't a drag, treat as tap (for double-tap)
+        if (!movedDuringDrag.current) {
+          const now = Date.now();
+          if (now - lastHandleTapMs.current < 280) {
+            setIsToolbarModeOpen(true);
+          }
+          lastHandleTapMs.current = now;
+        }
+      },
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [containerSize.w, containerSize.h, toolbarSize.w, toolbarSize.h]);
 
   const refreshPageRect = () => {
     const el = pageRef.current as any;
@@ -305,8 +531,8 @@ export default function Index() {
         id: uid(),
         points: pts.slice(),
         d,
-        w: activeWidth,
-        c: activeColor,
+        w: activeWidthRef.current,
+        c: activeColorRef.current,
         dx: 0,
         dy: 0,
         bbox,
@@ -326,6 +552,48 @@ export default function Index() {
     }
     currentPoints.current = [];
     setCurrentPath("");
+  };
+
+  const eraseAtPoint = (p: Point) => {
+    const radius = activeWidthRef.current / 2;
+
+    setStrokes((prev) => {
+      let changed = false;
+      const out: Stroke[] = [];
+
+      for (const s of prev) {
+        const replaced = splitStrokeByEraserCircle(s, p, radius);
+        if (replaced === null) out.push(s);
+        else {
+          changed = true;
+          out.push(...replaced);
+        }
+      }
+
+      return changed ? out : prev;
+    });
+  };
+
+  // Make eraser continuous between pointer events (precision without jagginess)
+  const eraseAlongSegment = (from: Point, to: Point) => {
+    const radius = activeWidthRef.current / 2;
+    const step = Math.max(2, radius * 0.35);
+
+    const d = dist(from, to);
+    if (d <= step) {
+      eraseAtPoint(to);
+      return;
+    }
+
+    const n = Math.ceil(d / step);
+    for (let i = 1; i <= n; i++) {
+      const t = i / n;
+      const p = {
+        x: from.x + (to.x - from.x) * t,
+        y: from.y + (to.y - from.y) * t,
+      };
+      eraseAtPoint(p);
+    }
   };
 
   const lassoToPath = (pts: Point[]) => {
@@ -453,6 +721,13 @@ export default function Index() {
           return;
         }
 
+        if (tool === "eraser") {
+          setEraserCursor(p);
+          lastEraserPoint.current = p;
+          eraseAtPoint(p);
+          return;
+        }
+
         startStroke(p);
       },
 
@@ -469,6 +744,15 @@ export default function Index() {
           return;
         }
 
+        if (tool === "eraser") {
+          setEraserCursor(p);
+          const prev = lastEraserPoint.current;
+          if (prev) eraseAlongSegment(prev, p);
+          else eraseAtPoint(p);
+          lastEraserPoint.current = p;
+          return;
+        }
+
         extendStroke(p);
       },
 
@@ -477,6 +761,12 @@ export default function Index() {
         e?.preventDefault?.();
 
         isPointerDown.current = false;
+
+        if (tool === "eraser") {
+          setEraserCursor(null);
+          lastEraserPoint.current = null;
+          return;
+        }
 
         if (tool === "lasso") {
           if (isMovingSelection.current) endMoveSelection();
@@ -490,6 +780,8 @@ export default function Index() {
       onPointerCancel: () => {
         if (!isPointerDown.current) return;
         isPointerDown.current = false;
+        setEraserCursor(null);
+        lastEraserPoint.current = null;
         endMoveSelection();
         setLassoPath("");
         lassoPoints.current = [];
@@ -521,6 +813,13 @@ export default function Index() {
           return;
         }
 
+        if (tool === "eraser") {
+          setEraserCursor(p);
+          lastEraserPoint.current = p;
+          eraseAtPoint(p);
+          return;
+        }
+
         startStroke(p);
       },
 
@@ -539,12 +838,27 @@ export default function Index() {
           return;
         }
 
+        if (tool === "eraser") {
+          setEraserCursor(p);
+          const prev = lastEraserPoint.current;
+          if (prev) eraseAlongSegment(prev, p);
+          else eraseAtPoint(p);
+          lastEraserPoint.current = p;
+          return;
+        }
+
         extendStroke(p);
       },
 
       onResponderRelease: () => {
         if (!isPointerDown.current) return;
         isPointerDown.current = false;
+
+        if (tool === "eraser") {
+          setEraserCursor(null);
+          lastEraserPoint.current = null;
+          return;
+        }
 
         if (tool === "lasso") {
           if (isMovingSelection.current) endMoveSelection();
@@ -557,201 +871,235 @@ export default function Index() {
     };
   }, [tool, zoom, selectedIds, selectedSet, strokes]);
 
+  const iconOn = "#0B1026";
+  const iconOff = "rgba(255,255,255,0.92)";
+
+  const toolbarRow =
+    toolbarOrientation === "horizontal"
+      ? ({
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 10,
+        } as any)
+      : ({
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 10,
+        } as any);
+
   return (
-    <View style={{ flex: 1, backgroundColor: WORKSPACE_BG }}>
-      {/* Top bar */}
+    <View
+      style={{ flex: 1, backgroundColor: WORKSPACE_BG }}
+      onLayout={(e) => {
+        const { width, height } = e.nativeEvent.layout;
+        setContainerSize({ w: width, h: height });
+        // keep toolbar in view if container changes (rotate / resize)
+        setToolbarPos((p) => {
+          const next = clampToolbarPos(p.x, p.y);
+          return next;
+        });
+      }}
+    >
+      {/* Floating, draggable toolbar */}
       <View
         style={{
-          paddingTop: 14,
-          paddingHorizontal: 12,
-          paddingBottom: 10,
-          flexDirection: "row",
-          gap: 10,
-          alignItems: "center",
-          borderBottomWidth: 1,
-          borderBottomColor: "rgba(0,0,0,0.08)",
-          backgroundColor: "#fff",
+          position: "absolute",
+          left: toolbarPos.x,
+          top: toolbarPos.y,
+          zIndex: 50,
         }}
+        onLayout={(e) => {
+          const { width, height } = e.nativeEvent.layout;
+          setToolbarSize({ w: width, h: height });
+          // clamp in case size changed
+          setToolbarPos((p) => clampToolbarPos(p.x, p.y));
+        }}
+        pointerEvents="box-none"
       >
-        <Pressable
-          onPress={() => {
-            setTool("pen");
-            setSelectedIds([]);
-            setLassoPath("");
-          }}
-          style={{
-            paddingVertical: 10,
-            paddingHorizontal: 14,
-            borderRadius: 12,
-            backgroundColor: tool === "pen" ? "#111" : "#f2f2f2",
-          }}
-        >
-          <Text
-            style={{
-              color: tool === "pen" ? "#fff" : "#111",
-              fontWeight: "800",
-            }}
-          >
-            Pen
-          </Text>
-        </Pressable>
-
-        <Pressable
-          onPress={() => {
-            setTool("eraser");
-            setSelectedIds([]);
-            setLassoPath("");
-          }}
-          style={{
-            paddingVertical: 10,
-            paddingHorizontal: 14,
-            borderRadius: 12,
-            backgroundColor: tool === "eraser" ? "#111" : "#f2f2f2",
-          }}
-        >
-          <Text
-            style={{
-              color: tool === "eraser" ? "#fff" : "#111",
-              fontWeight: "800",
-            }}
-          >
-            Erase
-          </Text>
-        </Pressable>
-
-        <Pressable
-          onPress={() => {
-            setTool("lasso");
-            setLassoPath("");
-            lassoPoints.current = [];
-          }}
-          style={{
-            paddingVertical: 10,
-            paddingHorizontal: 14,
-            borderRadius: 12,
-            backgroundColor: tool === "lasso" ? "#111" : "#f2f2f2",
-          }}
-        >
-          <Text
-            style={{
-              color: tool === "lasso" ? "#fff" : "#111",
-              fontWeight: "800",
-            }}
-          >
-            Lasso
-          </Text>
-        </Pressable>
-
-        <Pressable
-          onPress={() => {
-            setStrokes([]);
-            setSelectedIds([]);
-            setCurrentPath("");
-            setLassoPath("");
-            currentPoints.current = [];
-            lassoPoints.current = [];
-          }}
-          style={{
-            paddingVertical: 10,
-            paddingHorizontal: 14,
-            borderRadius: 12,
-            backgroundColor: "#f2f2f2",
-          }}
-        >
-          <Text style={{ color: "#111", fontWeight: "800" }}>Clear</Text>
-        </Pressable>
-
-        <Pressable
-          onPress={() => setIsSizeModalOpen(true)}
-          style={{
-            paddingVertical: 10,
-            paddingHorizontal: 14,
-            borderRadius: 12,
-            backgroundColor: "#f2f2f2",
-          }}
-        >
-          <Text style={{ color: "#111", fontWeight: "800" }}>
-            Size: {SIZE_OPTIONS[sizeIndex].label}
-          </Text>
-        </Pressable>
-
-        <Pressable
-          onPress={() => setIsColorModalOpen(true)}
-          style={{
-            paddingVertical: 10,
-            paddingHorizontal: 14,
-            borderRadius: 12,
-            backgroundColor: penColor,
-            borderWidth: 1,
-            borderColor: "#ddd",
-            opacity: tool === "eraser" ? 0.5 : 1,
-          }}
-        >
-          <Text style={{ color: "#fff", fontWeight: "900" }}>Color</Text>
-        </Pressable>
-
-        <Pressable
-          onPress={deleteSelection}
-          disabled={selectedIds.length === 0}
-          style={{
-            paddingVertical: 10,
-            paddingHorizontal: 14,
-            borderRadius: 12,
-            backgroundColor: selectedIds.length === 0 ? "#f2f2f2" : "#ff3b30",
-            opacity: selectedIds.length === 0 ? 0.5 : 1,
-          }}
-        >
-          <Text
-            style={{
-              color: selectedIds.length === 0 ? "#111" : "#fff",
-              fontWeight: "900",
-            }}
-          >
-            Delete
-          </Text>
-        </Pressable>
-
-        {/* Zoom controls */}
         <View
-          style={{ flexDirection: "row", gap: 8, marginLeft: "auto" as any }}
+          style={[
+            {
+              padding: 10,
+              borderRadius: 16,
+              borderWidth: 1,
+              borderColor: TOPBAR_BORDER,
+              backgroundColor: TOPBAR_BG,
+            },
+            toolbarRow,
+          ]}
         >
-          <Pressable
-            onPress={() => setZoom((z) => clampZoom(z - 0.1))}
+          {/* 3-dot drag handle (drag to move, double-tap to open mode modal) */}
+          <View
+            {...handlePanResponder.panHandlers}
             style={{
-              paddingVertical: 10,
-              paddingHorizontal: 12,
-              borderRadius: 12,
-              backgroundColor: "#f2f2f2",
+              width: 46,
+              height: 46,
+              borderRadius: 14,
+              alignItems: "center",
+              justifyContent: "center",
+              backgroundColor: "rgba(255,255,255,0.06)",
+              borderWidth: 1,
+              borderColor: "rgba(255,255,255,0.12)",
             }}
           >
-            <Text style={{ color: "#111", fontWeight: "900" }}>−</Text>
-          </Pressable>
+            <MoreVertical size={20} color={iconOff} />
+          </View>
 
-          <Pressable
-            onPress={() => setZoom(1)}
-            style={{
-              paddingVertical: 10,
-              paddingHorizontal: 12,
-              borderRadius: 12,
-              backgroundColor: "#f2f2f2",
+          <IconButton
+            onPress={() => {
+              setTool("pen");
+              setSelectedIds([]);
+              setLassoPath("");
+              setEraserCursor(null);
+              lastEraserPoint.current = null;
             }}
+            active={tool === "pen"}
           >
-            <Text style={{ color: "#111", fontWeight: "900" }}>
-              {Math.round(zoom * 100)}%
-            </Text>
-          </Pressable>
+            <PenLine size={20} color={tool === "pen" ? iconOn : iconOff} />
+          </IconButton>
 
-          <Pressable
-            onPress={() => setZoom((z) => clampZoom(z + 0.1))}
-            style={{
-              paddingVertical: 10,
-              paddingHorizontal: 12,
-              borderRadius: 12,
-              backgroundColor: "#f2f2f2",
+          <IconButton
+            onPress={() => {
+              setTool("eraser");
+              setSelectedIds([]);
+              setLassoPath("");
             }}
+            active={tool === "eraser"}
           >
-            <Text style={{ color: "#111", fontWeight: "900" }}>+</Text>
-          </Pressable>
+            <Eraser size={20} color={tool === "eraser" ? iconOn : iconOff} />
+          </IconButton>
+
+          <IconButton
+            onPress={() => {
+              setTool("lasso");
+              setLassoPath("");
+              lassoPoints.current = [];
+              setEraserCursor(null);
+              lastEraserPoint.current = null;
+            }}
+            active={tool === "lasso"}
+          >
+            <LassoSelect
+              size={20}
+              color={tool === "lasso" ? iconOn : iconOff}
+            />
+          </IconButton>
+
+          <IconButton onPress={() => setIsSizeModalOpen(true)}>
+            <View style={{ alignItems: "center", justifyContent: "center" }}>
+              <SlidersHorizontal size={20} color={iconOff} />
+              <View
+                style={{
+                  position: "absolute",
+                  right: -10,
+                  top: -10,
+                  minWidth: 22,
+                  height: 22,
+                  paddingHorizontal: 6,
+                  borderRadius: 999,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: "rgba(255,255,255,0.18)",
+                  borderWidth: 1,
+                  borderColor: "rgba(255,255,255,0.20)",
+                }}
+              >
+                <Text
+                  style={{ color: "#fff", fontSize: 12, fontWeight: "900" }}
+                >
+                  {SIZE_OPTIONS[sizeIndex].label}
+                </Text>
+              </View>
+            </View>
+          </IconButton>
+
+          <IconButton
+            onPress={() => setIsColorModalOpen(true)}
+            disabled={tool === "eraser"}
+            bgOverride={penColor}
+            borderOverride={"rgba(255,255,255,0.30)"}
+          >
+            <Palette size={20} color={"#ffffff"} />
+          </IconButton>
+
+          {tool === "lasso" && (
+            <IconButton
+              onPress={deleteSelection}
+              disabled={selectedIds.length === 0}
+              bgOverride={selectedIds.length === 0 ? BTN_BG : "#ff3b30"}
+              borderOverride={
+                selectedIds.length === 0 ? BTN_BORDER : "rgba(255,255,255,0.22)"
+              }
+            >
+              <Trash2
+                size={20}
+                color={selectedIds.length === 0 ? iconOff : "#fff"}
+              />
+            </IconButton>
+          )}
+
+          {/* Zoom controls (compact) */}
+          <View
+            style={
+              toolbarOrientation === "horizontal"
+                ? ({ flexDirection: "row", gap: 8, marginLeft: 6 } as any)
+                : ({ flexDirection: "column", gap: 8, marginTop: 6 } as any)
+            }
+          >
+            <Pressable
+              onPress={() => setZoom((z) => clampZoom(z - 0.1))}
+              style={{
+                width: 46,
+                height: 46,
+                borderRadius: 14,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: BTN_BG,
+                borderWidth: 1,
+                borderColor: BTN_BORDER,
+              }}
+            >
+              <Text style={{ color: iconOff, fontWeight: "900", fontSize: 18 }}>
+                −
+              </Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => setZoom(1)}
+              style={{
+                height: 46,
+                paddingHorizontal: 14,
+                borderRadius: 14,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: BTN_BG,
+                borderWidth: 1,
+                borderColor: BTN_BORDER,
+              }}
+            >
+              <Text style={{ color: iconOff, fontWeight: "900" }}>
+                {Math.round(zoom * 100)}%
+              </Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => setZoom((z) => clampZoom(z + 0.1))}
+              style={{
+                width: 46,
+                height: 46,
+                borderRadius: 14,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: BTN_BG,
+                borderWidth: 1,
+                borderColor: BTN_BORDER,
+              }}
+            >
+              <Text style={{ color: iconOff, fontWeight: "900", fontSize: 18 }}>
+                +
+              </Text>
+            </Pressable>
+          </View>
         </View>
       </View>
 
@@ -796,13 +1144,13 @@ export default function Index() {
                 backgroundColor: PAGE_BG,
                 borderWidth: 1,
                 borderColor: PAGE_BORDER,
-                borderRadius: 6,
+                borderRadius: 10,
                 overflow: "hidden",
                 shadowColor: "#000",
-                shadowOpacity: 0.12,
-                shadowRadius: 14,
-                shadowOffset: { width: 0, height: 6 },
-                boxShadow: "0 10px 30px rgba(0,0,0,0.12)",
+                shadowOpacity: 0.25,
+                shadowRadius: 18,
+                shadowOffset: { width: 0, height: 10 },
+                boxShadow: "0 14px 40px rgba(0,0,0,0.35)",
                 touchAction: "none",
                 userSelect: "none",
               } as any
@@ -872,11 +1220,129 @@ export default function Index() {
                     strokeDasharray="6 6"
                   />
                 ) : null}
+
+                {/* Eraser outline preview */}
+                {tool === "eraser" && eraserCursor ? (
+                  <Circle
+                    cx={eraserCursor.x}
+                    cy={eraserCursor.y}
+                    r={eraserRadius}
+                    stroke="rgba(0,0,0,0.45)"
+                    strokeWidth={2}
+                    fill="rgba(255,255,255,0.18)"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ) : null}
               </Svg>
             </View>
           </View>
         </View>
       </View>
+
+      {/* Toolbar mode modal (opened by double-tap on 3-dot handle) */}
+      <Modal
+        visible={isToolbarModeOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsToolbarModeOpen(false)}
+      >
+        <Pressable
+          onPress={() => setIsToolbarModeOpen(false)}
+          style={{
+            flex: 1,
+            backgroundColor: "rgba(0,0,0,0.45)",
+            justifyContent: "center",
+            padding: 20,
+          }}
+        >
+          <Pressable
+            onPress={() => {}}
+            style={{
+              alignSelf: "center",
+              width: 320,
+              maxWidth: "100%",
+              backgroundColor: "#0F1638",
+              borderRadius: 18,
+              padding: 16,
+              gap: 12,
+              borderWidth: 1,
+              borderColor: "rgba(255,255,255,0.10)",
+            }}
+          >
+            <Text style={{ fontSize: 16, fontWeight: "900", color: "#fff" }}>
+              Toolbar layout
+            </Text>
+
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              <Pressable
+                onPress={() => {
+                  setToolbarOrientation("horizontal");
+                  setIsToolbarModeOpen(false);
+                }}
+                style={{
+                  flex: 1,
+                  paddingVertical: 12,
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor:
+                    toolbarOrientation === "horizontal"
+                      ? "#fff"
+                      : "rgba(255,255,255,0.18)",
+                  backgroundColor:
+                    toolbarOrientation === "horizontal"
+                      ? "rgba(255,255,255,0.14)"
+                      : "rgba(255,255,255,0.06)",
+                  alignItems: "center",
+                }}
+              >
+                <Text style={{ color: "#fff", fontWeight: "900" }}>
+                  Horizontal
+                </Text>
+              </Pressable>
+
+              <Pressable
+                onPress={() => {
+                  setToolbarOrientation("vertical");
+                  setIsToolbarModeOpen(false);
+                }}
+                style={{
+                  flex: 1,
+                  paddingVertical: 12,
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor:
+                    toolbarOrientation === "vertical"
+                      ? "#fff"
+                      : "rgba(255,255,255,0.18)",
+                  backgroundColor:
+                    toolbarOrientation === "vertical"
+                      ? "rgba(255,255,255,0.14)"
+                      : "rgba(255,255,255,0.06)",
+                  alignItems: "center",
+                }}
+              >
+                <Text style={{ color: "#fff", fontWeight: "900" }}>
+                  Vertical
+                </Text>
+              </Pressable>
+            </View>
+
+            <Pressable
+              onPress={() => setIsToolbarModeOpen(false)}
+              style={{
+                paddingVertical: 12,
+                borderRadius: 12,
+                backgroundColor: "rgba(255,255,255,0.10)",
+                borderWidth: 1,
+                borderColor: "rgba(255,255,255,0.12)",
+                alignItems: "center",
+              }}
+            >
+              <Text style={{ color: "#fff", fontWeight: "900" }}>Close</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Size modal */}
       <Modal
@@ -889,7 +1355,7 @@ export default function Index() {
           onPress={() => setIsSizeModalOpen(false)}
           style={{
             flex: 1,
-            backgroundColor: "rgba(0,0,0,0.35)",
+            backgroundColor: "rgba(0,0,0,0.55)",
             justifyContent: "center",
             padding: 20,
           }}
@@ -897,13 +1363,15 @@ export default function Index() {
           <Pressable
             onPress={() => {}}
             style={{
-              backgroundColor: "#fff",
-              borderRadius: 16,
+              backgroundColor: "#0F1638",
+              borderRadius: 18,
               padding: 16,
               gap: 12,
+              borderWidth: 1,
+              borderColor: "rgba(255,255,255,0.10)",
             }}
           >
-            <Text style={{ fontSize: 16, fontWeight: "900" }}>
+            <Text style={{ fontSize: 16, fontWeight: "900", color: "#fff" }}>
               Select size (Pen/Eraser)
             </Text>
 
@@ -922,24 +1390,18 @@ export default function Index() {
                       paddingVertical: 12,
                       borderRadius: 12,
                       borderWidth: 1,
-                      borderColor: selected ? "#111" : "#ddd",
-                      backgroundColor: selected ? "#111" : "#fff",
+                      borderColor: selected ? "#fff" : "rgba(255,255,255,0.18)",
+                      backgroundColor: selected
+                        ? "rgba(255,255,255,0.14)"
+                        : "rgba(255,255,255,0.06)",
                       alignItems: "center",
                     }}
                   >
-                    <Text
-                      style={{
-                        color: selected ? "#fff" : "#111",
-                        fontWeight: "900",
-                      }}
-                    >
+                    <Text style={{ color: "#fff", fontWeight: "900" }}>
                       {opt.label}
                     </Text>
                     <Text
-                      style={{
-                        color: selected ? "#fff" : "#666",
-                        fontSize: 12,
-                      }}
+                      style={{ color: "rgba(255,255,255,0.70)", fontSize: 12 }}
                     >
                       Pen {opt.width}px • Erase{" "}
                       {Math.round(opt.width * ERASER_MULT)}px
@@ -954,11 +1416,13 @@ export default function Index() {
               style={{
                 paddingVertical: 12,
                 borderRadius: 12,
-                backgroundColor: "#f2f2f2",
+                backgroundColor: "rgba(255,255,255,0.10)",
+                borderWidth: 1,
+                borderColor: "rgba(255,255,255,0.12)",
                 alignItems: "center",
               }}
             >
-              <Text style={{ color: "#111", fontWeight: "900" }}>Cancel</Text>
+              <Text style={{ color: "#fff", fontWeight: "900" }}>Close</Text>
             </Pressable>
           </Pressable>
         </Pressable>
@@ -975,7 +1439,7 @@ export default function Index() {
           onPress={() => setIsColorModalOpen(false)}
           style={{
             flex: 1,
-            backgroundColor: "rgba(0,0,0,0.25)",
+            backgroundColor: "rgba(0,0,0,0.35)",
             alignItems: "flex-end",
             justifyContent: "flex-start",
             paddingTop: 60,
