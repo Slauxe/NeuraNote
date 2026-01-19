@@ -6,6 +6,8 @@ import {
   MoreVertical,
   Palette,
   PenLine,
+  RotateCcw,
+  RotateCw,
   SlidersHorizontal,
   Trash2,
 } from "lucide-react-native";
@@ -440,6 +442,33 @@ export default function Index() {
   // Strokes + current stroke
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [currentPath, setCurrentPath] = useState("");
+
+  // Undo/Redo history
+  const [history, setHistory] = useState<Stroke[][]>([[]]);
+  const [historyIndex, setHistoryIndex] = useState(0);
+
+  const pushHistory = (newStrokes: Stroke[]) => {
+    const newIndex = historyIndex + 1;
+    setHistory((prev) => [...prev.slice(0, newIndex), newStrokes]);
+    setHistoryIndex(newIndex);
+  };
+
+  const undo = () => {
+    if (historyIndex > 0) {
+      const newIndex = historyIndex - 1;
+      setHistoryIndex(newIndex);
+      setStrokes(history[newIndex]);
+    }
+  };
+
+  const redo = () => {
+    if (historyIndex < history.length - 1) {
+      const newIndex = historyIndex + 1;
+      setHistoryIndex(newIndex);
+      setStrokes(history[newIndex]);
+    }
+  };
+
   // --- Load strokes when we open/switch notes
   useEffect(() => {
     let cancelled = false;
@@ -457,7 +486,10 @@ export default function Index() {
           (data?.doc && Array.isArray(data.doc.strokes) && data.doc.strokes) ||
           [];
 
-        setStrokes(raw as Stroke[]);
+        const loadedStrokes = raw as Stroke[];
+        setStrokes(loadedStrokes);
+        setHistory([loadedStrokes]);
+        setHistoryIndex(0);
 
         // Reset transient UI state when switching notes
         setSelectedIds([]);
@@ -501,6 +533,7 @@ export default function Index() {
   // Eraser cursor (outline)
   const [eraserCursor, setEraserCursor] = useState<Point | null>(null);
   const lastEraserPoint = useRef<Point | null>(null);
+  const eraserSessionStart = useRef<Stroke[] | null>(null);
 
   // Lasso UI
   const [lassoPath, setLassoPath] = useState("");
@@ -522,6 +555,7 @@ export default function Index() {
   const isMovingSelection = useRef(false);
   const moveStart = useRef<Point | null>(null);
   const moveBase = useRef<Map<string, { dx: number; dy: number }>>(new Map());
+  const moveSessionStart = useRef<Stroke[] | null>(null);
 
   // rAF throttling (web)
   const rafId = useRef<number | null>(null);
@@ -763,7 +797,11 @@ export default function Index() {
         dy: 0,
         bbox,
       };
-      setStrokes((prev) => [...prev, stroke]);
+      setStrokes((prev) => {
+        const updated = [...prev, stroke];
+        pushHistory(updated);
+        return updated;
+      });
     }
 
     currentPoints.current = [];
@@ -884,6 +922,7 @@ export default function Index() {
     if (selectedIds.length === 0) return;
     isMovingSelection.current = true;
     moveStart.current = p;
+    moveSessionStart.current = strokes.map((s) => ({ ...s }));
     const base = new Map<string, { dx: number; dy: number }>();
     for (const s of strokes) {
       if (selectedSet.has(s.id)) base.set(s.id, { dx: s.dx, dy: s.dy });
@@ -907,14 +946,27 @@ export default function Index() {
   };
 
   const endMoveSelection = () => {
+    if (isMovingSelection.current && moveSessionStart.current) {
+      setStrokes((prev) => {
+        if (JSON.stringify(prev) !== JSON.stringify(moveSessionStart.current)) {
+          pushHistory(prev);
+        }
+        return prev;
+      });
+    }
     isMovingSelection.current = false;
     moveStart.current = null;
     moveBase.current = new Map();
+    moveSessionStart.current = null;
   };
 
   const deleteSelection = () => {
     if (selectedIds.length === 0) return;
-    setStrokes((prev) => prev.filter((s) => !selectedSet.has(s.id)));
+    setStrokes((prev) => {
+      const updated = prev.filter((s) => !selectedSet.has(s.id));
+      pushHistory(updated);
+      return updated;
+    });
     setSelectedIds([]);
   };
 
@@ -949,6 +1001,7 @@ export default function Index() {
 
         if (tool === "eraser") {
           setEraserCursor(p);
+          eraserSessionStart.current = strokes.map((s) => ({ ...s }));
           lastEraserPoint.current = p;
           eraseAtPoint(p);
           return;
@@ -989,8 +1042,16 @@ export default function Index() {
         isPointerDown.current = false;
 
         if (tool === "eraser") {
+          if (
+            eraserSessionStart.current &&
+            JSON.stringify(strokes) !==
+              JSON.stringify(eraserSessionStart.current)
+          ) {
+            pushHistory(strokes);
+          }
           setEraserCursor(null);
           lastEraserPoint.current = null;
+          eraserSessionStart.current = null;
           return;
         }
 
@@ -1325,6 +1386,36 @@ export default function Index() {
                 +
               </Text>
             </Pressable>
+          </View>
+
+          {/* Undo/Redo controls */}
+          <View
+            style={
+              toolbarOrientation === "horizontal"
+                ? ({ flexDirection: "row", gap: 8, marginLeft: 6 } as any)
+                : ({ flexDirection: "column", gap: 8, marginTop: 6 } as any)
+            }
+          >
+            <IconButton onPress={undo} disabled={historyIndex <= 0}>
+              <RotateCcw
+                size={20}
+                color={historyIndex > 0 ? iconOff : "rgba(255,255,255,0.4)"}
+              />
+            </IconButton>
+
+            <IconButton
+              onPress={redo}
+              disabled={historyIndex >= history.length - 1}
+            >
+              <RotateCw
+                size={20}
+                color={
+                  historyIndex < history.length - 1
+                    ? iconOff
+                    : "rgba(255,255,255,0.4)"
+                }
+              />
+            </IconButton>
           </View>
         </View>
       </View>

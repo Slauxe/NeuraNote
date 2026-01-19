@@ -6,6 +6,7 @@ export type NoteMeta = {
   id: string;
   title: string;
   updatedAt: number; // epoch ms
+  coverColor?: string; // hex like "#8B5CF6"
 };
 
 export type NoteDoc = {
@@ -18,6 +19,7 @@ type NoteFile = {
   id: string;
   title: string;
   updatedAt: number;
+  coverColor?: string;
   doc: NoteDoc;
 };
 
@@ -154,7 +156,12 @@ async function rebuildIndexFromFiles(): Promise<NotesIndexFile> {
     const nf = await readJson<NoteFile>(notePath(id));
     if (!nf) continue;
 
-    notes.push({ id: nf.id, title: nf.title, updatedAt: nf.updatedAt });
+    notes.push({
+      id: nf.id,
+      title: nf.title,
+      updatedAt: nf.updatedAt,
+      coverColor: nf.coverColor,
+    });
   }
 
   notes.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -176,7 +183,10 @@ export async function listNotes(): Promise<NoteMeta[]> {
 }
 
 /** Create a new note file + add it to index.json. Returns the new noteId. */
-export async function createNote(title = "No name"): Promise<string> {
+export async function createNote(
+  title = "No name",
+  coverColor = "#8B5CF6",
+): Promise<string> {
   const id = newId();
   const t = now();
 
@@ -184,6 +194,7 @@ export async function createNote(title = "No name"): Promise<string> {
     id,
     title,
     updatedAt: t,
+    coverColor,
     doc: { strokes: [] },
   };
 
@@ -193,7 +204,7 @@ export async function createNote(title = "No name"): Promise<string> {
   const idx = await loadIndex();
   const next: NotesIndexFile = {
     version: 1,
-    notes: [{ id, title, updatedAt: t }, ...idx.notes],
+    notes: [{ id, title, updatedAt: t, coverColor }, ...idx.notes],
   };
   await saveIndex(next);
 
@@ -209,7 +220,12 @@ export async function loadNote(
   if (!nf) return null;
 
   return {
-    meta: { id: nf.id, title: nf.title, updatedAt: nf.updatedAt },
+    meta: {
+      id: nf.id,
+      title: nf.title,
+      updatedAt: nf.updatedAt,
+      coverColor: nf.coverColor,
+    },
     doc: nf.doc ?? { strokes: [] },
   };
 }
@@ -220,7 +236,7 @@ export async function loadNote(
  */
 export async function saveNote(
   id: string,
-  updates: { title?: string; doc?: NoteDoc },
+  updates: { title?: string; coverColor?: string; doc?: NoteDoc },
 ): Promise<void> {
   await ensureNotesDir();
   const path = notePath(id);
@@ -229,12 +245,14 @@ export async function saveNote(
   // If note file is missing, create it
   const t = now();
   const title = updates.title ?? existing?.title ?? "No name";
+  const coverColor = updates.coverColor ?? existing?.coverColor ?? "#8B5CF6";
   const doc = updates.doc ?? existing?.doc ?? { strokes: [] };
 
   const nextFile: NoteFile = {
     id,
     title,
     updatedAt: t,
+    coverColor,
     doc,
   };
 
@@ -245,7 +263,7 @@ export async function saveNote(
   const without = idx.notes.filter((n) => n.id !== id);
   const nextIdx: NotesIndexFile = {
     version: 1,
-    notes: [{ id, title, updatedAt: t }, ...without],
+    notes: [{ id, title, updatedAt: t, coverColor }, ...without],
   };
   await saveIndex(nextIdx);
 }

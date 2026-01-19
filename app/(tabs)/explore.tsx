@@ -17,14 +17,28 @@ import {
 } from "../../lib/notesStorage";
 
 // Match Index theme
-const WORKSPACE_BG = "#0B1026"; // deep violet/blue
+const WORKSPACE_BG = "#0B1026";
 const TOPBAR_BG = "rgba(15, 22, 56, 0.92)";
 const TOPBAR_BORDER = "rgba(255,255,255,0.10)";
 const BTN_BG = "rgba(255,255,255,0.10)";
 const BTN_BORDER = "rgba(255,255,255,0.14)";
 const TEXT_MAIN = "rgba(255,255,255,0.92)";
 const TEXT_MUTED = "rgba(255,255,255,0.65)";
-const ACCENT = "#2563EB"; // keep your blue accent
+const ACCENT = "#2563EB";
+
+const DEFAULT_COVER = "#8B5CF6";
+const COVER_SWATCHES = [
+  "#8B5CF6", // violet
+  "#2563EB", // blue
+  "#06B6D4", // cyan
+  "#22C55E", // green
+  "#F59E0B", // amber
+  "#EF4444", // red
+  "#EC4899", // pink
+  "#A855F7", // purple
+  "#111111", // black
+  "#FFFFFF", // white
+];
 
 function fmtDate(ms: number) {
   const d = new Date(ms);
@@ -35,14 +49,14 @@ function fmtDate(ms: number) {
   });
 }
 
-function CoverIcon() {
+function CoverIcon({ color }: { color: string }) {
   return (
     <View
       style={{
         width: 150,
         height: 180,
         borderRadius: 16,
-        backgroundColor: "#8B5CF6",
+        backgroundColor: color,
         overflow: "hidden",
         shadowColor: "#000",
         shadowOpacity: 0.25,
@@ -134,12 +148,17 @@ export default function Explore() {
 
   const [editMode, setEditMode] = useState(false);
 
-  // Rename modal state
+  // Create modal
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createTitle, setCreateTitle] = useState("No name");
+  const [createCover, setCreateCover] = useState(DEFAULT_COVER);
+
+  // Rename modal
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameId, setRenameId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
 
-  // Delete confirm modal state
+  // Delete modal
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
@@ -172,8 +191,16 @@ export default function Explore() {
     });
   };
 
-  const onCreate = async () => {
-    const id = await createNote("No name");
+  const openCreateModal = () => {
+    setCreateTitle("No name");
+    setCreateCover(DEFAULT_COVER);
+    setCreateOpen(true);
+  };
+
+  const commitCreate = async () => {
+    const title = createTitle.trim() || "No name";
+    const id = await createNote(title, createCover);
+    setCreateOpen(false);
     openNote(id);
   };
 
@@ -236,7 +263,7 @@ export default function Explore() {
             label={editMode ? "Done" : "Edit"}
             onPress={() => setEditMode((v) => !v)}
           />
-          <HeaderButton label="+ Create" onPress={onCreate} primary />
+          <HeaderButton label="+ Create" onPress={openCreateModal} primary />
         </View>
       </View>
 
@@ -261,7 +288,7 @@ export default function Explore() {
             </Text>
 
             <Pressable
-              onPress={onCreate}
+              onPress={openCreateModal}
               style={{
                 marginTop: 10,
                 backgroundColor: ACCENT,
@@ -276,64 +303,179 @@ export default function Explore() {
             </Pressable>
           </View>
         ) : (
-          <View
-            style={{
-              flexDirection: "row",
-              flexWrap: "wrap",
-              gap: 22,
-            }}
-          >
-            {grid.map((n) => (
-              <View key={n.id} style={{ width: 170 }}>
-                <Pressable
-                  onPress={() => {
-                    if (editMode) return;
-                    openNote(n.id);
-                  }}
-                  style={{
-                    backgroundColor: "transparent",
-                  }}
-                >
-                  <CoverIcon />
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 22 }}>
+            {grid.map((n) => {
+              const cover = n.coverColor || DEFAULT_COVER;
 
-                  <View style={{ marginTop: 10 }}>
-                    <Text
-                      numberOfLines={1}
-                      style={{
-                        fontSize: 16,
-                        fontWeight: "900",
-                        color: TEXT_MAIN,
-                      }}
-                    >
-                      {n.title || "No name"}
-                    </Text>
-                    <Text
-                      style={{ marginTop: 2, color: TEXT_MUTED, fontSize: 12 }}
-                    >
-                      {fmtDate(n.updatedAt)}
-                    </Text>
-                  </View>
-                </Pressable>
+              return (
+                <View key={n.id} style={{ width: 170 }}>
+                  <Pressable
+                    onPress={() => {
+                      if (editMode) return;
+                      openNote(n.id);
+                    }}
+                    style={{ backgroundColor: "transparent" }}
+                  >
+                    <CoverIcon color={cover} />
 
-                {/* Edit controls */}
-                {editMode ? (
-                  <View style={{ marginTop: 10, gap: 8 }}>
-                    <SmallActionButton
-                      label="Rename"
-                      onPress={() => startRename(n)}
-                    />
-                    <SmallActionButton
-                      label="Delete"
-                      danger
-                      onPress={() => startDelete(n.id)}
-                    />
-                  </View>
-                ) : null}
-              </View>
-            ))}
+                    <View style={{ marginTop: 10 }}>
+                      <Text
+                        numberOfLines={1}
+                        style={{
+                          fontSize: 16,
+                          fontWeight: "900",
+                          color: TEXT_MAIN,
+                        }}
+                      >
+                        {n.title || "No name"}
+                      </Text>
+                      <Text
+                        style={{
+                          marginTop: 2,
+                          color: TEXT_MUTED,
+                          fontSize: 12,
+                        }}
+                      >
+                        {fmtDate(n.updatedAt)}
+                      </Text>
+                    </View>
+                  </Pressable>
+
+                  {editMode ? (
+                    <View style={{ marginTop: 10, gap: 8 }}>
+                      <SmallActionButton
+                        label="Rename"
+                        onPress={() => startRename(n)}
+                      />
+                      <SmallActionButton
+                        label="Delete"
+                        danger
+                        onPress={() => startDelete(n.id)}
+                      />
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })}
           </View>
         )}
       </ScrollView>
+
+      {/* Create Modal */}
+      <Modal
+        visible={createOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCreateOpen(false)}
+      >
+        <Pressable
+          onPress={() => setCreateOpen(false)}
+          style={{
+            flex: 1,
+            backgroundColor: "rgba(0,0,0,0.55)",
+            justifyContent: "center",
+            padding: 20,
+          }}
+        >
+          <Pressable
+            onPress={() => {}}
+            style={{
+              alignSelf: "center",
+              width: 360,
+              maxWidth: "100%",
+              backgroundColor: "#0F1638",
+              borderRadius: 18,
+              padding: 16,
+              gap: 12,
+              borderWidth: 1,
+              borderColor: "rgba(255,255,255,0.10)",
+            }}
+          >
+            <Text style={{ fontSize: 16, fontWeight: "900", color: "#fff" }}>
+              Create note
+            </Text>
+
+            <TextInput
+              value={createTitle}
+              onChangeText={setCreateTitle}
+              placeholder="Note name"
+              placeholderTextColor="rgba(255,255,255,0.45)"
+              style={{
+                height: 46,
+                borderRadius: 12,
+                paddingHorizontal: 12,
+                backgroundColor: "rgba(255,255,255,0.08)",
+                borderWidth: 1,
+                borderColor: "rgba(255,255,255,0.12)",
+                color: "#fff",
+                fontWeight: "700",
+              }}
+              autoFocus
+            />
+
+            <Text
+              style={{ color: TEXT_MUTED, fontWeight: "800", marginTop: 4 }}
+            >
+              Cover color
+            </Text>
+
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
+              {COVER_SWATCHES.map((c) => {
+                const selected = c.toLowerCase() === createCover.toLowerCase();
+                const border =
+                  c.toLowerCase() === "#ffffff"
+                    ? "rgba(0,0,0,0.25)"
+                    : "rgba(255,255,255,0.18)";
+
+                return (
+                  <Pressable
+                    key={c}
+                    onPress={() => setCreateCover(c)}
+                    style={{
+                      width: 28,
+                      height: 28,
+                      borderRadius: 999,
+                      backgroundColor: c,
+                      borderWidth: selected ? 3 : 1,
+                      borderColor: selected ? "#fff" : border,
+                    }}
+                  />
+                );
+              })}
+            </View>
+
+            <View style={{ flexDirection: "row", gap: 10, marginTop: 6 }}>
+              <Pressable
+                onPress={() => setCreateOpen(false)}
+                style={{
+                  flex: 1,
+                  paddingVertical: 12,
+                  borderRadius: 12,
+                  backgroundColor: "rgba(255,255,255,0.10)",
+                  borderWidth: 1,
+                  borderColor: "rgba(255,255,255,0.12)",
+                  alignItems: "center",
+                }}
+              >
+                <Text style={{ color: "#fff", fontWeight: "900" }}>Cancel</Text>
+              </Pressable>
+
+              <Pressable
+                onPress={commitCreate}
+                style={{
+                  flex: 1,
+                  paddingVertical: 12,
+                  borderRadius: 12,
+                  backgroundColor: ACCENT,
+                  alignItems: "center",
+                }}
+              >
+                <Text style={{ color: "#fff", fontWeight: "900" }}>Create</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Rename Modal */}
       <Modal
@@ -420,7 +562,7 @@ export default function Explore() {
         </Pressable>
       </Modal>
 
-      {/* Delete Confirm Modal */}
+      {/* Delete Modal */}
       <Modal
         visible={deleteOpen}
         transparent
