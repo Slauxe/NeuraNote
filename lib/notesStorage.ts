@@ -259,9 +259,6 @@ export async function deleteNote(id: string): Promise<void> {
     await FileSystem.deleteAsync(notePath(id), { idempotent: true });
   }
 
-  // Remove file
-  await FileSystem.deleteAsync(notePath(id), { idempotent: true });
-
   // Update index
   const idx = await loadIndex();
   const next: NotesIndexFile = {

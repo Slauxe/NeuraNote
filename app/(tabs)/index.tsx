@@ -1,4 +1,5 @@
 import Slider from "@react-native-community/slider";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   Eraser,
   LassoSelect,
@@ -26,6 +27,7 @@ import Svg, {
   Rect,
   Stop,
 } from "react-native-svg";
+import { createNote, loadNote, saveNote } from "../../lib/notesStorage";
 
 type Point = { x: number; y: number };
 
@@ -317,8 +319,71 @@ function clamp(n: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, n));
 }
 
+function normalizeNoteId(x: unknown): string | null {
+  if (typeof x === "string" && x.trim()) return x;
+  if (Array.isArray(x) && typeof x[0] === "string" && x[0].trim()) return x[0];
+  return null;
+}
+
+function sanitizeStroke(raw: any): Stroke | null {
+  if (!raw) return null;
+  const points = Array.isArray(raw.points) ? raw.points : [];
+  if (points.length < 1) return null;
+
+  const safePoints: Point[] = points
+    .map((p: any) => ({ x: Number(p?.x), y: Number(p?.y) }))
+    .filter((p: Point) => Number.isFinite(p.x) && Number.isFinite(p.y));
+
+  if (safePoints.length < 1) return null;
+
+  const d =
+    typeof raw.d === "string" && raw.d.trim().length > 0
+      ? raw.d
+      : pointsToSmoothPath(safePoints);
+
+  const bbox =
+    raw.bbox &&
+    Number.isFinite(raw.bbox.minX) &&
+    Number.isFinite(raw.bbox.minY) &&
+    Number.isFinite(raw.bbox.maxX) &&
+    Number.isFinite(raw.bbox.maxY)
+      ? raw.bbox
+      : computeBBox(safePoints);
+
+  return {
+    id: typeof raw.id === "string" && raw.id ? raw.id : uid(),
+    points: safePoints,
+    d,
+    w: Number.isFinite(raw.w) ? raw.w : 4,
+    c: typeof raw.c === "string" ? raw.c : "#111111",
+    dx: Number.isFinite(raw.dx) ? raw.dx : 0,
+    dy: Number.isFinite(raw.dy) ? raw.dy : 0,
+    bbox,
+  };
+}
+
 export default function Index() {
+  // ---- STEP 3: note routing + persistence
+  // ---- STEP 3: note routing + persistence
+  const router = useRouter();
+  const params = useLocalSearchParams();
+  const routeNoteId = normalizeNoteId((params as any)?.noteId);
+
+  const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
+
+  // Prevent autosave while we are loading a note
+  const [hydrating, setHydrating] = useState(false);
+
+  // Debounced autosave timer
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Tool
   const [tool, setTool] = useState<"pen" | "eraser" | "lasso">("pen");
+
+  // Keep activeNoteId synced with the route param
+  useEffect(() => {
+    if (routeNoteId) setActiveNoteId(routeNoteId);
+  }, [routeNoteId]);
 
   // Toolbar drag + orientation
   const [toolbarOrientation, setToolbarOrientation] = useState<
@@ -375,6 +440,63 @@ export default function Index() {
   // Strokes + current stroke
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [currentPath, setCurrentPath] = useState("");
+  // --- Load strokes when we open/switch notes
+  useEffect(() => {
+    let cancelled = false;
+
+    async function run() {
+      if (!activeNoteId) return;
+
+      setHydrating(true);
+
+      try {
+        const data = await loadNote(activeNoteId);
+        if (cancelled) return;
+
+        const raw =
+          (data?.doc && Array.isArray(data.doc.strokes) && data.doc.strokes) ||
+          [];
+
+        setStrokes(raw as Stroke[]);
+
+        // Reset transient UI state when switching notes
+        setSelectedIds([]);
+        setLassoPath("");
+        lassoPoints.current = [];
+        setCurrentPath("");
+        currentPoints.current = [];
+        setEraserCursor(null);
+        lastEraserPoint.current = null;
+        isPointerDown.current = false;
+      } finally {
+        if (!cancelled) setHydrating(false);
+      }
+    }
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeNoteId]);
+
+  // --- Autosave strokes (debounced)
+  useEffect(() => {
+    if (!activeNoteId) return;
+    if (hydrating) return;
+
+    // Optional: avoid saving mid-stroke
+    if (isPointerDown.current) return;
+
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+
+    saveTimerRef.current = setTimeout(() => {
+      saveNote(activeNoteId, { doc: { strokes } }).catch(() => {});
+    }, 450);
+
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
+  }, [activeNoteId, strokes, hydrating]);
 
   // Eraser cursor (outline)
   const [eraserCursor, setEraserCursor] = useState<Point | null>(null);
@@ -458,6 +580,110 @@ export default function Index() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [containerSize.w, containerSize.h, toolbarSize.w, toolbarSize.h]);
+
+  // ---- STEP 3: load note when noteId changes (and auto-create if missing)
+  useEffect(() => {
+    let cancelled = false;
+
+    const resetCanvasState = () => {
+      // stop any in-flight draw
+      isPointerDown.current = false;
+      currentPoints.current = [];
+      setCurrentPath("");
+
+      // clear selection/lasso/eraser preview
+      setSelectedIds([]);
+      setLassoPath("");
+      lassoPoints.current = [];
+      setEraserCursor(null);
+      lastEraserPoint.current = null;
+      isMovingSelection.current = false;
+      moveStart.current = null;
+      moveBase.current = new Map();
+    };
+
+    const run = async () => {
+      // If no noteId in route, create one and replace route
+      if (!routeNoteId) {
+        try {
+          const newId = await createNote("No name");
+          if (cancelled) return;
+          router.replace({
+            pathname: "/(tabs)",
+            params: { noteId: newId },
+          });
+        } catch {
+          // If create fails, just stay
+        }
+        return;
+      }
+
+      // flush any pending save from previous note
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+
+      setActiveNoteId(routeNoteId);
+      setHydrating(true);
+
+      // Clear immediately so you don't see previous note while loading
+      resetCanvasState();
+      setStrokes([]);
+
+      try {
+        const data: any = await loadNote(routeNoteId);
+        if (cancelled) return;
+
+        // Accept either {strokes} or {doc:{strokes}}
+        const rawStrokes =
+          (data?.doc && Array.isArray(data.doc.strokes) && data.doc.strokes) ||
+          [];
+
+        const cleaned = rawStrokes
+          .map(sanitizeStroke)
+          .filter(Boolean) as Stroke[];
+
+        setStrokes(cleaned);
+      } catch {
+        // If load fails, keep it empty
+        if (!cancelled) setStrokes([]);
+      } finally {
+        setHydrating(false);
+      }
+    };
+
+    run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [routeNoteId, router]);
+
+  // ---- STEP 3: autosave strokes (debounced)
+  useEffect(() => {
+    if (!activeNoteId) return;
+    if (hydrating) return;
+
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+
+    saveTimerRef.current = setTimeout(() => {
+      // Don’t save if we’re mid-stroke (optional)
+      // If you want to save mid-stroke too, remove this guard.
+      if (hydrating) return;
+
+      // Save minimal doc (strokes)
+      // notesStorage can accept any shape; we keep it simple.
+      saveNote(activeNoteId, { doc: { strokes } }).catch(() => {});
+    }, 450);
+
+    return () => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+    };
+  }, [strokes, activeNoteId]);
 
   const refreshPageRect = () => {
     const el = pageRef.current as any;
