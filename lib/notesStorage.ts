@@ -11,6 +11,8 @@ export type NoteMeta = {
 
 export type NoteDoc = {
   strokes: any[]; // keep as any[] for now to avoid circular imports from index.tsx
+  pages?: Array<{ id?: string; strokes: any[] }>;
+  currentPageIndex?: number;
   // Add more later if you want: zoom, page settings, etc.
   // zoom?: number;
 };
@@ -195,7 +197,11 @@ export async function createNote(
     title,
     updatedAt: t,
     coverColor,
-    doc: { strokes: [] },
+    doc: {
+      strokes: [],
+      pages: [{ id: "page-1", strokes: [] }],
+      currentPageIndex: 0,
+    },
   };
 
   await ensureNotesDir();
@@ -226,7 +232,12 @@ export async function loadNote(
       updatedAt: nf.updatedAt,
       coverColor: nf.coverColor,
     },
-    doc: nf.doc ?? { strokes: [] },
+    doc:
+      nf.doc ?? {
+        strokes: [],
+        pages: [{ id: "page-1", strokes: [] }],
+        currentPageIndex: 0,
+      },
   };
 }
 
@@ -246,7 +257,13 @@ export async function saveNote(
   const t = now();
   const title = updates.title ?? existing?.title ?? "No name";
   const coverColor = updates.coverColor ?? existing?.coverColor ?? "#8B5CF6";
-  const doc = updates.doc ?? existing?.doc ?? { strokes: [] };
+  const doc =
+    updates.doc ??
+    existing?.doc ?? {
+      strokes: [],
+      pages: [{ id: "page-1", strokes: [] }],
+      currentPageIndex: 0,
+    };
 
   const nextFile: NoteFile = {
     id,

@@ -12,11 +12,17 @@ import {
   Trash2,
 } from "lucide-react-native";
 import React, { useEffect, useMemo, useRef, useState } from "react";
+// perfect-freehand provides a variable-width stroke polygon generator
+// we import it here and generate a filled polygon path for new strokes.
+// Note: you still need to `npm install perfect-freehand` or `yarn add perfect-freehand`.
+import getStroke from "perfect-freehand";
+
 import {
   Modal,
   PanResponder,
   Platform,
   Pressable,
+  ScrollView,
   Text,
   View,
 } from "react-native";
@@ -37,6 +43,8 @@ type Stroke = {
   id: string;
   points: Point[];
   d: string;
+  // optional filled polygon path from perfect-freehand
+  pf?: string;
   w: number;
   c: string;
   dx: number;
@@ -127,6 +135,28 @@ function pointsToSmoothPath(points: Point[]) {
   return d;
 }
 
+/**
+ * Convert a list of `Point` to a filled polygon SVG path using perfect-freehand.
+ * Returns an empty string on failure.
+ */
+function getPfPath(points: Point[], size: number) {
+  try {
+    if (!points || points.length === 0) return "";
+    const input = points.map((p) => [p.x, p.y]);
+    // generate the variable-width polygon (array of [x,y])
+    const stroke = getStroke(input as any, { size });
+    if (!stroke || stroke.length === 0) return "";
+    let d = `M ${stroke[0][0]} ${stroke[0][1]}`;
+    for (let i = 1; i < stroke.length; i++) {
+      d += ` L ${stroke[i][0]} ${stroke[i][1]}`;
+    }
+    d += " Z";
+    return d;
+  } catch (e) {
+    return "";
+  }
+}
+
 function computeBBox(points: Point[]) {
   let minX = Infinity,
     minY = Infinity,
@@ -207,6 +237,43 @@ function uid() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
+function pointAt(a: Point, b: Point, t: number): Point {
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+}
+
+function segmentCircleTs(a: Point, b: Point, center: Point, radius: number) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const fx = a.x - center.x;
+  const fy = a.y - center.y;
+
+  const A = dx * dx + dy * dy;
+  if (A < 1e-9) return [] as number[];
+
+  const B = 2 * (fx * dx + fy * dy);
+  const C = fx * fx + fy * fy - radius * radius;
+  const disc = B * B - 4 * A * C;
+  if (disc < 0) return [] as number[];
+
+  const out: number[] = [];
+  const root = Math.sqrt(Math.max(0, disc));
+  const t1 = (-B - root) / (2 * A);
+  const t2 = (-B + root) / (2 * A);
+  if (t1 >= 0 && t1 <= 1) out.push(t1);
+  if (t2 >= 0 && t2 <= 1) out.push(t2);
+  out.sort((x, y) => x - y);
+
+  if (out.length <= 1) return out;
+
+  const deduped = [out[0]];
+  for (let i = 1; i < out.length; i++) {
+    if (Math.abs(out[i] - deduped[deduped.length - 1]) > 1e-5) {
+      deduped.push(out[i]);
+    }
+  }
+  return deduped;
+}
+
 /**
  * Real eraser: split a stroke into runs of points that are OUTSIDE the eraser circle.
  * Returns:
@@ -215,8 +282,6 @@ function uid() {
  * - [ ...newStrokes ] if partially erased (may split)
  */
 function splitStrokeByEraserCircle(s: Stroke, center: Point, radius: number) {
-  const r2 = radius * radius;
-
   // Quick bbox check in page coords
   const sb = {
     minX: s.bbox.minX + s.dx,
@@ -232,28 +297,85 @@ function splitStrokeByEraserCircle(s: Stroke, center: Point, radius: number) {
   };
   if (!bboxOverlap(sb, eb)) return null;
 
+  let anyErased = false;
   const runs: Point[][] = [];
   let cur: Point[] = [];
-  let anyErased = false;
 
-  // IMPORTANT: iterate original points (keeps smoothness)
-  for (const p of s.points) {
-    const px = p.x + s.dx;
-    const py = p.y + s.dy;
-    const dx = px - center.x;
-    const dy = py - center.y;
-    const inside = dx * dx + dy * dy <= r2;
+  if (s.points.length === 0) return null;
 
-    if (inside) {
-      anyErased = true;
+  const pagePoints = s.points.map((p) => ({ x: p.x + s.dx, y: p.y + s.dy }));
+
+  for (let i = 0; i < pagePoints.length - 1; i++) {
+    const a = pagePoints[i];
+    const b = pagePoints[i + 1];
+    const roots = segmentCircleTs(a, b, center, radius);
+    const cuts = [0, ...roots, 1];
+
+    const outsideIntervals: Array<{ t0: number; t1: number }> = [];
+    for (let j = 0; j < cuts.length - 1; j++) {
+      const t0 = cuts[j];
+      const t1 = cuts[j + 1];
+      if (t1 - t0 < 1e-6) continue;
+      const tm = (t0 + t1) / 2;
+      const m = pointAt(a, b, tm);
+      const mdx = m.x - center.x;
+      const mdy = m.y - center.y;
+      const outside = mdx * mdx + mdy * mdy > radius * radius;
+      if (outside) outsideIntervals.push({ t0, t1 });
+      else anyErased = true;
+    }
+
+    if (outsideIntervals.length === 0) {
       if (cur.length > 0) {
         runs.push(cur);
         cur = [];
       }
-    } else {
-      cur.push(p);
+      continue;
+    }
+
+    if (cur.length > 0 && outsideIntervals[0].t0 > 1e-6) {
+      runs.push(cur);
+      cur = [];
+    }
+
+    for (let j = 0; j < outsideIntervals.length; j++) {
+      const { t0, t1 } = outsideIntervals[j];
+      const start = pointAt(a, b, t0);
+      const end = pointAt(a, b, t1);
+      const startLocal = { x: start.x - s.dx, y: start.y - s.dy };
+      const endLocal = { x: end.x - s.dx, y: end.y - s.dy };
+
+      if (cur.length === 0) cur.push(startLocal);
+      else if (dist(cur[cur.length - 1], startLocal) > 1e-4) {
+        runs.push(cur);
+        cur = [startLocal];
+      }
+
+      if (dist(cur[cur.length - 1], endLocal) > 1e-4) cur.push(endLocal);
+
+      if (t1 < 1 - 1e-6) {
+        runs.push(cur);
+        cur = [];
+      }
     }
   }
+
+  const lastPage = pagePoints[pagePoints.length - 1];
+  const ldx = lastPage.x - center.x;
+  const ldy = lastPage.y - center.y;
+  const lastOutside = ldx * ldx + ldy * ldy > radius * radius;
+  if (lastOutside) {
+    const lastLocal = { x: lastPage.x - s.dx, y: lastPage.y - s.dy };
+    if (cur.length === 0) cur.push(lastLocal);
+    else if (dist(cur[cur.length - 1], lastLocal) > 1e-4) cur.push(lastLocal);
+  } else {
+    anyErased = true;
+    if (cur.length > 0) {
+      runs.push(cur);
+      cur = [];
+    }
+  }
+
   if (cur.length > 0) runs.push(cur);
 
   if (!anyErased) return null;
@@ -275,6 +397,34 @@ function splitStrokeByEraserCircle(s: Stroke, center: Point, radius: number) {
   }
 
   return next;
+}
+
+function splitStrokeByEraserPathPoints(
+  s: Stroke,
+  centers: Point[],
+  radius: number,
+) {
+  if (centers.length === 0) return null;
+
+  let parts: Stroke[] = [s];
+  let changed = false;
+
+  for (const center of centers) {
+    if (parts.length === 0) break;
+
+    const nextParts: Stroke[] = [];
+    for (const part of parts) {
+      const replaced = splitStrokeByEraserCircle(part, center, radius);
+      if (replaced === null) nextParts.push(part);
+      else {
+        changed = true;
+        nextParts.push(...replaced);
+      }
+    }
+    parts = nextParts;
+  }
+
+  return changed ? parts : null;
 }
 
 // Small icon-only button
@@ -364,6 +514,102 @@ function sanitizeStroke(raw: any): Stroke | null {
   };
 }
 
+function normalizeDocToPages(rawDoc: any): {
+  pages: Stroke[][];
+  currentPageIndex: number;
+} {
+  const rawPages = Array.isArray(rawDoc?.pages) ? rawDoc.pages : null;
+
+  let pages: Stroke[][] = [];
+  if (rawPages && rawPages.length > 0) {
+    pages = rawPages.map(
+      (pg: any) =>
+        (Array.isArray(pg?.strokes) ? pg.strokes : [])
+          .map(sanitizeStroke)
+          .filter(Boolean) as Stroke[],
+    );
+  } else {
+    const rawStrokes =
+      (rawDoc && Array.isArray(rawDoc.strokes) && rawDoc.strokes) || [];
+    pages = [rawStrokes.map(sanitizeStroke).filter(Boolean) as Stroke[]];
+  }
+
+  if (pages.length === 0) pages = [[]];
+
+  const rawIndex = Number(rawDoc?.currentPageIndex);
+  const currentPageIndex = Number.isFinite(rawIndex)
+    ? Math.max(0, Math.min(pages.length - 1, Math.trunc(rawIndex)))
+    : 0;
+
+  return { pages, currentPageIndex };
+}
+
+function buildDocFromPages(pages: Stroke[][], currentPageIndex: number) {
+  const safePages = pages.length > 0 ? pages : [[]];
+  const clampedIndex = Math.max(
+    0,
+    Math.min(safePages.length - 1, currentPageIndex),
+  );
+  return {
+    strokes: safePages[clampedIndex] ?? [],
+    pages: safePages.map((p, i) => ({ id: `page-${i + 1}`, strokes: p })),
+    currentPageIndex: clampedIndex,
+  };
+}
+
+function PageThumbnail({
+  strokes,
+  selected,
+  label,
+}: {
+  strokes: Stroke[];
+  selected: boolean;
+  label: string;
+}) {
+  const TW = 92;
+  const TH = Math.round((PAGE_H / PAGE_W) * TW);
+  const scale = TW / PAGE_W;
+
+  return (
+    <View style={{ alignItems: "center", gap: 6 }}>
+      <View
+        style={{
+          width: TW + 8,
+          height: TH + 8,
+          borderRadius: 10,
+          alignItems: "center",
+          justifyContent: "center",
+          borderWidth: 1,
+          borderColor: selected ? "#fff" : "rgba(255,255,255,0.20)",
+          backgroundColor: selected
+            ? "rgba(255,255,255,0.14)"
+            : "rgba(255,255,255,0.06)",
+        }}
+      >
+        <Svg width={TW} height={TH}>
+          <Rect x={0} y={0} width={TW} height={TH} rx={7} fill="#fff" />
+          <G transform={`scale(${scale})`}>
+            {strokes.map((s) => (
+              <G key={s.id} transform={`translate(${s.dx} ${s.dy})`}>
+                <Path d={s.d} stroke={s.c} strokeWidth={s.w} fill="none" />
+              </G>
+            ))}
+          </G>
+        </Svg>
+      </View>
+      <Text
+        style={{
+          color: selected ? "#fff" : "rgba(255,255,255,0.80)",
+          fontSize: 11,
+          fontWeight: "800",
+        }}
+      >
+        {label}
+      </Text>
+    </View>
+  );
+}
+
 export default function Index() {
   // ---- STEP 3: note routing + persistence
   // ---- STEP 3: note routing + persistence
@@ -407,6 +653,8 @@ export default function Index() {
   // double-tap on the 3-dot handle
   const lastHandleTapMs = useRef<number>(0);
   const movedDuringDrag = useRef(false);
+  const toolbarDragStart = useRef<{ x: number; y: number } | null>(null);
+  const pointerPageIndex = useRef<number | null>(null);
 
   // Shared size
   const [sizeIndex, setSizeIndex] = useState(0);
@@ -421,6 +669,7 @@ export default function Index() {
   // Saved slots
   const [colorSlots, setColorSlots] = useState<string[]>(DEFAULT_SLOTS);
   const [activeSlotIndex, setActiveSlotIndex] = useState<number | null>(null);
+  const [isPagesModalOpen, setIsPagesModalOpen] = useState(false);
 
   // Effective settings depend on tool
   const activeColor = tool === "eraser" ? PAGE_BG : penColor;
@@ -442,6 +691,19 @@ export default function Index() {
   // Strokes + current stroke
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [currentPath, setCurrentPath] = useState("");
+  const [pages, setPages] = useState<Stroke[][]>([[]]);
+  const [currentPageIndex, setCurrentPageIndex] = useState(0);
+
+  useEffect(() => {
+    setPages((prev) => {
+      const base = prev.length > 0 ? prev : [[]];
+      const idx = Math.max(0, Math.min(currentPageIndex, base.length - 1));
+      if (base[idx] === strokes) return base;
+      const next = base.slice();
+      next[idx] = strokes;
+      return next;
+    });
+  }, [strokes, currentPageIndex]);
 
   // Undo/Redo history
   const [history, setHistory] = useState<Stroke[][]>([[]]);
@@ -482,11 +744,11 @@ export default function Index() {
         const data = await loadNote(activeNoteId);
         if (cancelled) return;
 
-        const raw =
-          (data?.doc && Array.isArray(data.doc.strokes) && data.doc.strokes) ||
-          [];
-
-        const loadedStrokes = raw as Stroke[];
+        const normalized = normalizeDocToPages(data?.doc);
+        const loadedStrokes =
+          normalized.pages[normalized.currentPageIndex] ?? [];
+        setPages(normalized.pages);
+        setCurrentPageIndex(normalized.currentPageIndex);
         setStrokes(loadedStrokes);
         setHistory([loadedStrokes]);
         setHistoryIndex(0);
@@ -522,13 +784,14 @@ export default function Index() {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
 
     saveTimerRef.current = setTimeout(() => {
-      saveNote(activeNoteId, { doc: { strokes } }).catch(() => {});
+      const doc = buildDocFromPages(pages, currentPageIndex);
+      saveNote(activeNoteId, { doc }).catch(() => {});
     }, 450);
 
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [activeNoteId, strokes, hydrating]);
+  }, [activeNoteId, strokes, hydrating, pages, currentPageIndex]);
 
   // Eraser cursor (outline)
   const [eraserCursor, setEraserCursor] = useState<Point | null>(null);
@@ -542,10 +805,6 @@ export default function Index() {
   // Selection
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
-
-  // Geometry refs
-  const pageRef = useRef<any>(null);
-  const pageRect = useRef<{ left: number; top: number } | null>(null);
 
   // Drawing refs
   const isPointerDown = useRef(false);
@@ -588,6 +847,7 @@ export default function Index() {
 
       onPanResponderGrant: () => {
         movedDuringDrag.current = false;
+        toolbarDragStart.current = toolbarPosRef.current;
       },
 
       onPanResponderMove: (_evt, gesture) => {
@@ -596,7 +856,7 @@ export default function Index() {
           movedDuringDrag.current = true;
         }
 
-        const base = toolbarPosRef.current;
+        const base = toolbarDragStart.current ?? toolbarPosRef.current;
         const next = clampToolbarPos(base.x + gesture.dx, base.y + gesture.dy);
         setToolbarPos(next);
       },
@@ -610,6 +870,10 @@ export default function Index() {
           }
           lastHandleTapMs.current = now;
         }
+        toolbarDragStart.current = null;
+      },
+      onPanResponderTerminate: () => {
+        toolbarDragStart.current = null;
       },
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -669,19 +933,22 @@ export default function Index() {
         const data: any = await loadNote(routeNoteId);
         if (cancelled) return;
 
-        // Accept either {strokes} or {doc:{strokes}}
-        const rawStrokes =
-          (data?.doc && Array.isArray(data.doc.strokes) && data.doc.strokes) ||
-          [];
-
-        const cleaned = rawStrokes
-          .map(sanitizeStroke)
-          .filter(Boolean) as Stroke[];
-
-        setStrokes(cleaned);
+        const normalized = normalizeDocToPages(data?.doc);
+        const pageStrokes = normalized.pages[normalized.currentPageIndex] ?? [];
+        setPages(normalized.pages);
+        setCurrentPageIndex(normalized.currentPageIndex);
+        setStrokes(pageStrokes);
+        setHistory([pageStrokes]);
+        setHistoryIndex(0);
       } catch {
         // If load fails, keep it empty
-        if (!cancelled) setStrokes([]);
+        if (!cancelled) {
+          setPages([[]]);
+          setCurrentPageIndex(0);
+          setStrokes([]);
+          setHistory([[]]);
+          setHistoryIndex(0);
+        }
       } finally {
         setHydrating(false);
       }
@@ -706,9 +973,8 @@ export default function Index() {
       // If you want to save mid-stroke too, remove this guard.
       if (hydrating) return;
 
-      // Save minimal doc (strokes)
-      // notesStorage can accept any shape; we keep it simple.
-      saveNote(activeNoteId, { doc: { strokes } }).catch(() => {});
+      const doc = buildDocFromPages(pages, currentPageIndex);
+      saveNote(activeNoteId, { doc }).catch(() => {});
     }, 450);
 
     return () => {
@@ -717,28 +983,39 @@ export default function Index() {
         saveTimerRef.current = null;
       }
     };
-  }, [strokes, activeNoteId]);
+  }, [strokes, activeNoteId, hydrating, pages, currentPageIndex]);
 
-  const refreshPageRect = () => {
-    const el = pageRef.current as any;
-    if (el?.getBoundingClientRect) {
-      const r = el.getBoundingClientRect();
-      pageRect.current = { left: r.left, top: r.top };
-    } else {
-      pageRect.current = { left: 0, top: 0 };
+  const getLocalPagePoint = (e: any): Point | null => {
+    const ne = e?.nativeEvent ?? {};
+    let lx =
+      typeof ne.locationX === "number"
+        ? ne.locationX
+        : typeof ne.offsetX === "number"
+          ? ne.offsetX
+          : null;
+    let ly =
+      typeof ne.locationY === "number"
+        ? ne.locationY
+        : typeof ne.offsetY === "number"
+          ? ne.offsetY
+          : null;
+
+    if ((lx == null || ly == null) && Platform.OS === "web") {
+      const targetRect = e?.currentTarget?.getBoundingClientRect?.();
+      if (
+        targetRect &&
+        typeof ne.clientX === "number" &&
+        typeof ne.clientY === "number"
+      ) {
+        lx = ne.clientX - targetRect.left;
+        ly = ne.clientY - targetRect.top;
+      }
     }
-  };
 
-  const getPagePointWeb = (e: any): Point | null => {
-    const ne = e?.nativeEvent;
-    const clientX = ne?.clientX ?? 0;
-    const clientY = ne?.clientY ?? 0;
-    const rect = pageRect.current;
-    if (!rect) return null;
+    if (lx == null || ly == null) return null;
 
-    const x = (clientX - rect.left) / zoom;
-    const y = (clientY - rect.top) / zoom;
-
+    const x = lx / zoom;
+    const y = ly / zoom;
     if (x < 0 || y < 0 || x > PAGE_W || y > PAGE_H) return null;
     return { x, y };
   };
@@ -818,7 +1095,8 @@ export default function Index() {
     setCurrentPath("");
   };
 
-  const eraseAtPoint = (p: Point) => {
+  const eraseAtPoints = (points: Point[]) => {
+    if (points.length === 0) return;
     const radius = activeWidthRef.current / 2;
 
     setStrokes((prev) => {
@@ -826,7 +1104,7 @@ export default function Index() {
       const out: Stroke[] = [];
 
       for (const s of prev) {
-        const replaced = splitStrokeByEraserCircle(s, p, radius);
+        const replaced = splitStrokeByEraserPathPoints(s, points, radius);
         if (replaced === null) out.push(s);
         else {
           changed = true;
@@ -838,10 +1116,14 @@ export default function Index() {
     });
   };
 
+  const eraseAtPoint = (p: Point) => {
+    eraseAtPoints([p]);
+  };
+
   // Make eraser continuous between pointer events (precision without jagginess)
   const eraseAlongSegment = (from: Point, to: Point) => {
     const radius = activeWidthRef.current / 2;
-    const step = Math.max(2, radius * 0.35);
+    const step = Math.max(1.25, radius * 0.22);
 
     const d = dist(from, to);
     if (d <= step) {
@@ -850,14 +1132,15 @@ export default function Index() {
     }
 
     const n = Math.ceil(d / step);
+    const samples: Point[] = [];
     for (let i = 1; i <= n; i++) {
       const t = i / n;
-      const p = {
+      samples.push({
         x: from.x + (to.x - from.x) * t,
         y: from.y + (to.y - from.y) * t,
-      };
-      eraseAtPoint(p);
+      });
     }
+    eraseAtPoints(samples);
   };
 
   const lassoToPath = (pts: Point[]) => {
@@ -970,129 +1253,223 @@ export default function Index() {
     setSelectedIds([]);
   };
 
-  // Web pointer handlers on the page
-  const webHandlers = useMemo(() => {
-    if (Platform.OS !== "web") return {};
+  const resetForPageSwitch = () => {
+    isPointerDown.current = false;
+    cancelStroke();
+    setSelectedIds([]);
+    setLassoPath("");
+    lassoPoints.current = [];
+    setEraserCursor(null);
+    lastEraserPoint.current = null;
+    eraserSessionStart.current = null;
+    isMovingSelection.current = false;
+    moveStart.current = null;
+    moveBase.current = new Map();
+    moveSessionStart.current = null;
+  };
 
-    return {
-      onPointerDown: (e: any) => {
-        if (e?.nativeEvent?.button != null && e.nativeEvent.button !== 0)
-          return;
+  const selectPage = (index: number) => {
+    const safePages = pages.length > 0 ? pages : [[]];
+    const nextIndex = Math.max(0, Math.min(safePages.length - 1, index));
+    const nextStrokes = safePages[nextIndex] ?? [];
 
-        e?.preventDefault?.();
-        e?.stopPropagation?.();
+    resetForPageSwitch();
+    setCurrentPageIndex(nextIndex);
+    setStrokes(nextStrokes);
+    setHistory([nextStrokes]);
+    setHistoryIndex(0);
+  };
 
-        refreshPageRect();
+  const addPageBelowCurrent = () => {
+    const safePages = pages.length > 0 ? pages : [[]];
+    const insertAt = Math.max(
+      0,
+      Math.min(safePages.length, currentPageIndex + 1),
+    );
+    const nextPages = [
+      ...safePages.slice(0, insertAt),
+      [],
+      ...safePages.slice(insertAt),
+    ];
 
-        const p = getPagePointWeb(e);
-        if (!p) {
-          if (tool === "lasso") setSelectedIds([]);
-          return;
-        }
+    resetForPageSwitch();
+    setPages(nextPages);
+    setCurrentPageIndex(insertAt);
+    setStrokes([]);
+    setHistory([[]]);
+    setHistoryIndex(0);
+  };
 
-        isPointerDown.current = true;
-        e?.nativeEvent?.target?.setPointerCapture?.(e.nativeEvent.pointerId);
+  const removeCurrentPage = () => {
+    const safePages = pages.length > 0 ? pages : [[]];
 
-        if (tool === "lasso") {
-          if (selectedIds.length > 0) startMoveSelection(p);
-          else startLasso(p);
-          return;
-        }
+    if (safePages.length <= 1) {
+      resetForPageSwitch();
+      setPages([[]]);
+      setCurrentPageIndex(0);
+      setStrokes([]);
+      setHistory([[]]);
+      setHistoryIndex(0);
+      return;
+    }
 
-        if (tool === "eraser") {
-          setEraserCursor(p);
-          eraserSessionStart.current = strokes.map((s) => ({ ...s }));
-          lastEraserPoint.current = p;
-          eraseAtPoint(p);
-          return;
-        }
+    const nextPages = safePages.filter((_, i) => i !== currentPageIndex);
+    const nextIndex = Math.max(
+      0,
+      Math.min(nextPages.length - 1, currentPageIndex),
+    );
+    const nextStrokes = nextPages[nextIndex] ?? [];
 
-        startStroke(p);
-      },
+    resetForPageSwitch();
+    setPages(nextPages);
+    setCurrentPageIndex(nextIndex);
+    setStrokes(nextStrokes);
+    setHistory([nextStrokes]);
+    setHistoryIndex(0);
+  };
 
-      onPointerMove: (e: any) => {
-        if (!isPointerDown.current) return;
-        e?.preventDefault?.();
+  const movePage = (from: number, delta: -1 | 1) => {
+    const safePages = pages.length > 0 ? pages : [[]];
+    const to = from + delta;
+    if (from < 0 || from >= safePages.length) return;
+    if (to < 0 || to >= safePages.length) return;
 
-        const p = getPagePointWeb(e);
-        if (!p) return;
+    const nextPages = safePages.slice();
+    const [moved] = nextPages.splice(from, 1);
+    nextPages.splice(to, 0, moved);
 
-        if (tool === "lasso") {
-          if (isMovingSelection.current) moveSelectionTo(p);
-          else extendLasso(p);
-          return;
-        }
+    let nextCurrentIndex = currentPageIndex;
+    if (currentPageIndex === from) nextCurrentIndex = to;
+    else if (from < currentPageIndex && to >= currentPageIndex)
+      nextCurrentIndex = currentPageIndex - 1;
+    else if (from > currentPageIndex && to <= currentPageIndex)
+      nextCurrentIndex = currentPageIndex + 1;
 
-        if (tool === "eraser") {
-          setEraserCursor(p);
-          const prev = lastEraserPoint.current;
-          if (prev) eraseAlongSegment(prev, p);
-          else eraseAtPoint(p);
-          lastEraserPoint.current = p;
-          return;
-        }
+    setPages(nextPages);
+    setCurrentPageIndex(nextCurrentIndex);
+  };
 
-        extendStroke(p);
-      },
+  // Pointer/responder handlers scoped to one physical page
+  const getPageHandlers = (pageIndex: number) => {
+    if (Platform.OS === "web") {
+      return {
+        onPointerDown: (e: any) => {
+          if (e?.nativeEvent?.button != null && e.nativeEvent.button !== 0)
+            return;
 
-      onPointerUp: (e: any) => {
-        if (!isPointerDown.current) return;
-        e?.preventDefault?.();
+          e?.preventDefault?.();
+          e?.stopPropagation?.();
 
-        isPointerDown.current = false;
-
-        if (tool === "eraser") {
-          if (
-            eraserSessionStart.current &&
-            JSON.stringify(strokes) !==
-              JSON.stringify(eraserSessionStart.current)
-          ) {
-            pushHistory(strokes);
+          const p = getLocalPagePoint(e);
+          if (!p) {
+            if (tool === "lasso") setSelectedIds([]);
+            return;
           }
+
+          if (pageIndex !== currentPageIndex) selectPage(pageIndex);
+
+          pointerPageIndex.current = pageIndex;
+          isPointerDown.current = true;
+          e?.nativeEvent?.target?.setPointerCapture?.(e.nativeEvent.pointerId);
+
+          if (tool === "lasso") {
+            if (selectedIds.length > 0) startMoveSelection(p);
+            else startLasso(p);
+            return;
+          }
+
+          if (tool === "eraser") {
+            setEraserCursor(p);
+            eraserSessionStart.current = strokes.map((s) => ({ ...s }));
+            lastEraserPoint.current = p;
+            eraseAtPoint(p);
+            return;
+          }
+
+          startStroke(p);
+        },
+        onPointerMove: (e: any) => {
+          if (!isPointerDown.current) return;
+          if (pointerPageIndex.current !== pageIndex) return;
+          e?.preventDefault?.();
+
+          const p = getLocalPagePoint(e);
+          if (!p) return;
+
+          if (tool === "lasso") {
+            if (isMovingSelection.current) moveSelectionTo(p);
+            else extendLasso(p);
+            return;
+          }
+
+          if (tool === "eraser") {
+            setEraserCursor(p);
+            const prev = lastEraserPoint.current;
+            if (prev) eraseAlongSegment(prev, p);
+            else eraseAtPoint(p);
+            lastEraserPoint.current = p;
+            return;
+          }
+
+          extendStroke(p);
+        },
+        onPointerUp: (e: any) => {
+          if (!isPointerDown.current) return;
+          if (pointerPageIndex.current !== pageIndex) return;
+          e?.preventDefault?.();
+
+          isPointerDown.current = false;
+          pointerPageIndex.current = null;
+
+          if (tool === "eraser") {
+            if (
+              eraserSessionStart.current &&
+              JSON.stringify(strokes) !==
+                JSON.stringify(eraserSessionStart.current)
+            ) {
+              pushHistory(strokes);
+            }
+            setEraserCursor(null);
+            lastEraserPoint.current = null;
+            eraserSessionStart.current = null;
+            return;
+          }
+
+          if (tool === "lasso") {
+            if (isMovingSelection.current) endMoveSelection();
+            else finishLassoAndSelect();
+            return;
+          }
+
+          endStroke();
+        },
+        onPointerCancel: () => {
+          if (!isPointerDown.current) return;
+          if (pointerPageIndex.current !== pageIndex) return;
+          isPointerDown.current = false;
+          pointerPageIndex.current = null;
           setEraserCursor(null);
           lastEraserPoint.current = null;
-          eraserSessionStart.current = null;
-          return;
-        }
-
-        if (tool === "lasso") {
-          if (isMovingSelection.current) endMoveSelection();
-          else finishLassoAndSelect();
-          return;
-        }
-
-        endStroke();
-      },
-
-      onPointerCancel: () => {
-        if (!isPointerDown.current) return;
-        isPointerDown.current = false;
-        setEraserCursor(null);
-        lastEraserPoint.current = null;
-        endMoveSelection();
-        setLassoPath("");
-        lassoPoints.current = [];
-        cancelStroke();
-      },
-    };
-  }, [tool, zoom, strokes, selectedIds, selectedSet]);
-
-  // Mobile responder handlers on the page
-  const mobileResponderHandlers = useMemo(() => {
-    if (Platform.OS === "web") return {};
+          endMoveSelection();
+          setLassoPath("");
+          lassoPoints.current = [];
+          cancelStroke();
+        },
+      } as any;
+    }
 
     return {
       onStartShouldSetResponder: () => true,
       onMoveShouldSetResponder: () => true,
 
       onResponderGrant: (e: any) => {
-        const { locationX, locationY } = e.nativeEvent;
-        const x = locationX / zoom;
-        const y = locationY / zoom;
-        if (x < 0 || y < 0 || x > PAGE_W || y > PAGE_H) return;
+        const p = getLocalPagePoint(e);
+        if (!p) return;
+
+        if (pageIndex !== currentPageIndex) selectPage(pageIndex);
 
         isPointerDown.current = true;
-        const p = { x, y };
+        pointerPageIndex.current = pageIndex;
 
         if (tool === "lasso") {
           if (selectedIds.length > 0) startMoveSelection(p);
@@ -1112,12 +1489,9 @@ export default function Index() {
 
       onResponderMove: (e: any) => {
         if (!isPointerDown.current) return;
-        const { locationX, locationY } = e.nativeEvent;
-        const x = locationX / zoom;
-        const y = locationY / zoom;
-        if (x < 0 || y < 0 || x > PAGE_W || y > PAGE_H) return;
-
-        const p = { x, y };
+        if (pointerPageIndex.current !== pageIndex) return;
+        const p = getLocalPagePoint(e);
+        if (!p) return;
 
         if (tool === "lasso") {
           if (isMovingSelection.current) moveSelectionTo(p);
@@ -1139,7 +1513,9 @@ export default function Index() {
 
       onResponderRelease: () => {
         if (!isPointerDown.current) return;
+        if (pointerPageIndex.current !== pageIndex) return;
         isPointerDown.current = false;
+        pointerPageIndex.current = null;
 
         if (tool === "eraser") {
           setEraserCursor(null);
@@ -1155,8 +1531,15 @@ export default function Index() {
 
         endStroke();
       },
+      onResponderTerminate: () => {
+        if (!isPointerDown.current) return;
+        if (pointerPageIndex.current !== pageIndex) return;
+        isPointerDown.current = false;
+        pointerPageIndex.current = null;
+        cancelStroke();
+      },
     };
-  }, [tool, zoom, selectedIds, selectedSet, strokes]);
+  };
 
   const iconOn = "#0B1026";
   const iconOff = "rgba(255,255,255,0.92)";
@@ -1309,6 +1692,30 @@ export default function Index() {
             <Palette size={20} color={"#ffffff"} />
           </IconButton>
 
+          <IconButton onPress={() => setIsPagesModalOpen(true)}>
+            <View style={{ alignItems: "center", justifyContent: "center" }}>
+              <Text
+                style={{
+                  color: iconOff,
+                  fontWeight: "900",
+                  fontSize: 12,
+                  lineHeight: 14,
+                }}
+              >
+                Pages
+              </Text>
+              <Text
+                style={{
+                  color: "rgba(255,255,255,0.75)",
+                  fontSize: 10,
+                  lineHeight: 12,
+                }}
+              >
+                {currentPageIndex + 1}/{Math.max(1, pages.length)}
+              </Text>
+            </View>
+          </IconButton>
+
           {tool === "lasso" && (
             <IconButton
               onPress={deleteSelection}
@@ -1420,7 +1827,7 @@ export default function Index() {
         </View>
       </View>
 
-      {/* Workspace: WEB uses native overflow scrolling (wheel works) */}
+      {/* Workspace: stacked physical pages */}
       <View
         style={
           Platform.OS === "web"
@@ -1442,117 +1849,120 @@ export default function Index() {
                   display: "flex",
                   justifyContent: "flex-start",
                   alignItems: "center",
+                  gap: 26,
                 } as any)
               : {
-                  flex: 1,
+                  minHeight: "100%",
                   padding: 24,
                   justifyContent: "flex-start",
                   alignItems: "center",
+                  gap: 26,
                 }
           }
         >
-          {/* Page (scaled) */}
-          <View
-            ref={pageRef}
-            style={
-              {
-                width: PAGE_W * zoom,
-                height: PAGE_H * zoom,
-                backgroundColor: PAGE_BG,
-                borderWidth: 1,
-                borderColor: PAGE_BORDER,
-                borderRadius: 10,
-                overflow: "hidden",
-                shadowColor: "#000",
-                shadowOpacity: 0.25,
-                shadowRadius: 18,
-                shadowOffset: { width: 0, height: 10 },
-                boxShadow: "0 14px 40px rgba(0,0,0,0.35)",
-                touchAction: "none",
-                userSelect: "none",
-              } as any
-            }
-            {...(Platform.OS === "web"
-              ? (webHandlers as any)
-              : (mobileResponderHandlers as any))}
-          >
-            {/* Inner content stays in PAGE coords, then scaled */}
-            <View
-              style={
-                {
-                  width: PAGE_W,
-                  height: PAGE_H,
-                  transform: [{ scale: zoom }],
-                  transformOrigin: "top left",
-                } as any
-              }
-            >
-              <Svg width={PAGE_W} height={PAGE_H} pointerEvents="none">
-                {strokes.map((s) => {
-                  const selected = selectedSet.has(s.id);
-                  return (
-                    <G key={s.id} transform={`translate(${s.dx} ${s.dy})`}>
-                      {selected ? (
-                        <Path
-                          d={s.d}
-                          stroke="rgba(0,122,255,0.35)"
-                          strokeWidth={s.w + 6}
-                          fill="none"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          vectorEffect="non-scaling-stroke"
-                        />
-                      ) : null}
+          {pages.map((pageStrokes, pageIndex) => {
+            const pageIsActive = pageIndex === currentPageIndex;
+            const renderStrokes = pageIsActive ? strokes : pageStrokes;
+            return (
+              <View
+                key={`page-${pageIndex}`}
+                style={
+                  {
+                    width: PAGE_W * zoom,
+                    height: PAGE_H * zoom,
+                    backgroundColor: PAGE_BG,
+                    borderWidth: pageIsActive ? 2 : 1,
+                    borderColor: pageIsActive ? "#9EC5FF" : PAGE_BORDER,
+                    borderRadius: 10,
+                    overflow: "hidden",
+                    shadowColor: "#000",
+                    shadowOpacity: 0.25,
+                    shadowRadius: 18,
+                    shadowOffset: { width: 0, height: 10 },
+                    boxShadow: "0 14px 40px rgba(0,0,0,0.35)",
+                    touchAction: "none",
+                    userSelect: "none",
+                  } as any
+                }
+                {...(getPageHandlers(pageIndex) as any)}
+              >
+                <View
+                  style={
+                    {
+                      width: PAGE_W,
+                      height: PAGE_H,
+                      transform: [{ scale: zoom }],
+                      transformOrigin: "top left",
+                    } as any
+                  }
+                >
+                  <Svg width={PAGE_W} height={PAGE_H} pointerEvents="none">
+                    {renderStrokes.map((s) => {
+                      const selected = pageIsActive && selectedSet.has(s.id);
+                      return (
+                        <G key={s.id} transform={`translate(${s.dx} ${s.dy})`}>
+                          {selected ? (
+                            <Path
+                              d={s.d}
+                              stroke="rgba(0,122,255,0.35)"
+                              strokeWidth={s.w + 6}
+                              fill="none"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              vectorEffect="non-scaling-stroke"
+                            />
+                          ) : null}
+                          <Path
+                            d={s.d}
+                            stroke={s.c}
+                            strokeWidth={s.w}
+                            fill="none"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        </G>
+                      );
+                    })}
+
+                    {pageIsActive && currentPath ? (
                       <Path
-                        d={s.d}
-                        stroke={s.c}
-                        strokeWidth={s.w}
+                        d={currentPath}
+                        stroke={activeColor}
+                        strokeWidth={activeWidth}
                         fill="none"
                         strokeLinecap="round"
                         strokeLinejoin="round"
                         vectorEffect="non-scaling-stroke"
                       />
-                    </G>
-                  );
-                })}
+                    ) : null}
 
-                {currentPath ? (
-                  <Path
-                    d={currentPath}
-                    stroke={activeColor}
-                    strokeWidth={activeWidth}
-                    fill="none"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                ) : null}
+                    {pageIsActive && lassoPath ? (
+                      <Path
+                        d={lassoPath}
+                        stroke="rgba(0,0,0,0.65)"
+                        strokeWidth={2}
+                        fill="rgba(0,0,0,0.05)"
+                        strokeDasharray="6 6"
+                      />
+                    ) : null}
 
-                {lassoPath ? (
-                  <Path
-                    d={lassoPath}
-                    stroke="rgba(0,0,0,0.65)"
-                    strokeWidth={2}
-                    fill="rgba(0,0,0,0.05)"
-                    strokeDasharray="6 6"
-                  />
-                ) : null}
-
-                {/* Eraser outline preview */}
-                {tool === "eraser" && eraserCursor ? (
-                  <Circle
-                    cx={eraserCursor.x}
-                    cy={eraserCursor.y}
-                    r={eraserRadius}
-                    stroke="rgba(0,0,0,0.45)"
-                    strokeWidth={2}
-                    fill="rgba(255,255,255,0.18)"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                ) : null}
-              </Svg>
-            </View>
-          </View>
+                    {pageIsActive && tool === "eraser" && eraserCursor ? (
+                      <Circle
+                        cx={eraserCursor.x}
+                        cy={eraserCursor.y}
+                        r={eraserRadius}
+                        stroke="rgba(0,0,0,0.45)"
+                        strokeWidth={2}
+                        fill="rgba(255,255,255,0.18)"
+                        vectorEffect="non-scaling-stroke"
+                      />
+                    ) : null}
+                  </Svg>
+                </View>
+              </View>
+            );
+          })}
         </View>
       </View>
 
@@ -1646,6 +2056,195 @@ export default function Index() {
 
             <Pressable
               onPress={() => setIsToolbarModeOpen(false)}
+              style={{
+                paddingVertical: 12,
+                borderRadius: 12,
+                backgroundColor: "rgba(255,255,255,0.10)",
+                borderWidth: 1,
+                borderColor: "rgba(255,255,255,0.12)",
+                alignItems: "center",
+              }}
+            >
+              <Text style={{ color: "#fff", fontWeight: "900" }}>Close</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Pages modal */}
+      <Modal
+        visible={isPagesModalOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsPagesModalOpen(false)}
+      >
+        <Pressable
+          onPress={() => setIsPagesModalOpen(false)}
+          style={{
+            flex: 1,
+            backgroundColor: "rgba(0,0,0,0.55)",
+            justifyContent: "center",
+            padding: 20,
+          }}
+        >
+          <Pressable
+            onPress={() => {}}
+            style={{
+              backgroundColor: "#0F1638",
+              borderRadius: 18,
+              padding: 16,
+              gap: 12,
+              borderWidth: 1,
+              borderColor: "rgba(255,255,255,0.10)",
+              alignSelf: "center",
+              width: 420,
+              maxWidth: "100%",
+            }}
+          >
+            <Text style={{ fontSize: 16, fontWeight: "900", color: "#fff" }}>
+              Pages
+            </Text>
+            <Text style={{ color: "rgba(255,255,255,0.72)", fontSize: 12 }}>
+              Current page {currentPageIndex + 1} of {Math.max(1, pages.length)}
+            </Text>
+
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              <Pressable
+                onPress={addPageBelowCurrent}
+                style={{
+                  flex: 1,
+                  paddingVertical: 12,
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor: "rgba(255,255,255,0.20)",
+                  backgroundColor: "rgba(255,255,255,0.10)",
+                  alignItems: "center",
+                }}
+              >
+                <Text style={{ color: "#fff", fontWeight: "900" }}>
+                  Add Below
+                </Text>
+              </Pressable>
+
+              <Pressable
+                onPress={removeCurrentPage}
+                style={{
+                  flex: 1,
+                  paddingVertical: 12,
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor: "rgba(255,255,255,0.20)",
+                  backgroundColor:
+                    pages.length <= 1 ? "rgba(255,255,255,0.06)" : "#ff3b30",
+                  alignItems: "center",
+                  opacity: pages.length <= 1 ? 0.6 : 1,
+                }}
+              >
+                <Text style={{ color: "#fff", fontWeight: "900" }}>
+                  Remove Current
+                </Text>
+              </Pressable>
+            </View>
+
+            <ScrollView
+              style={{ maxHeight: 360 }}
+              contentContainerStyle={{ gap: 10, paddingBottom: 2 }}
+            >
+              {pages.map((pg, idx) => {
+                const selected = idx === currentPageIndex;
+                return (
+                  <View
+                    key={`page-row-${idx}`}
+                    style={{
+                      flexDirection: "row",
+                      gap: 10,
+                      alignItems: "center",
+                    }}
+                  >
+                    <Pressable
+                      onPress={() => selectPage(idx)}
+                      style={{
+                        flex: 1,
+                        paddingVertical: 10,
+                        paddingHorizontal: 12,
+                        borderRadius: 12,
+                        borderWidth: 1,
+                        borderColor: selected
+                          ? "#fff"
+                          : "rgba(255,255,255,0.18)",
+                        backgroundColor: selected
+                          ? "rgba(255,255,255,0.14)"
+                          : "rgba(255,255,255,0.06)",
+                      }}
+                    >
+                      <View
+                        style={{
+                          flexDirection: "row",
+                          gap: 10,
+                          alignItems: "center",
+                        }}
+                      >
+                        <PageThumbnail
+                          strokes={pg}
+                          selected={selected}
+                          label={`Page ${idx + 1}`}
+                        />
+                        <Text style={{ color: "#fff", fontWeight: "800" }}>
+                          {selected ? "Current" : "Select"}
+                        </Text>
+                      </View>
+                    </Pressable>
+
+                    <Pressable
+                      onPress={() => movePage(idx, -1)}
+                      style={{
+                        width: 42,
+                        height: 42,
+                        borderRadius: 10,
+                        alignItems: "center",
+                        justifyContent: "center",
+                        borderWidth: 1,
+                        borderColor: "rgba(255,255,255,0.18)",
+                        backgroundColor:
+                          idx === 0
+                            ? "rgba(255,255,255,0.04)"
+                            : "rgba(255,255,255,0.08)",
+                        opacity: idx === 0 ? 0.5 : 1,
+                      }}
+                    >
+                      <Text style={{ color: "#fff", fontWeight: "900" }}>
+                        ↑
+                      </Text>
+                    </Pressable>
+
+                    <Pressable
+                      onPress={() => movePage(idx, 1)}
+                      style={{
+                        width: 42,
+                        height: 42,
+                        borderRadius: 10,
+                        alignItems: "center",
+                        justifyContent: "center",
+                        borderWidth: 1,
+                        borderColor: "rgba(255,255,255,0.18)",
+                        backgroundColor:
+                          idx === pages.length - 1
+                            ? "rgba(255,255,255,0.04)"
+                            : "rgba(255,255,255,0.08)",
+                        opacity: idx === pages.length - 1 ? 0.5 : 1,
+                      }}
+                    >
+                      <Text style={{ color: "#fff", fontWeight: "900" }}>
+                        ↓
+                      </Text>
+                    </Pressable>
+                  </View>
+                );
+              })}
+            </ScrollView>
+
+            <Pressable
+              onPress={() => setIsPagesModalOpen(false)}
               style={{
                 paddingVertical: 12,
                 borderRadius: 12,

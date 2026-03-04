@@ -6,11 +6,16 @@ import { IconSymbol } from "@/components/ui/icon-symbol";
 import { Colors } from "@/constants/theme";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 
+export const unstable_settings = {
+  initialRouteName: "explore",
+};
+
 export default function TabLayout() {
   const colorScheme = useColorScheme();
 
   return (
     <Tabs
+      initialRouteName="explore"
       screenOptions={{
         tabBarActiveTintColor: Colors[colorScheme ?? "light"].tint,
         headerShown: false,
