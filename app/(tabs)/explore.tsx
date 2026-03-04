@@ -17,13 +17,13 @@ import {
 } from "../../lib/notesStorage";
 
 // Match Index theme
-const WORKSPACE_BG = "#0B1026";
-const TOPBAR_BG = "rgba(15, 22, 56, 0.92)";
-const TOPBAR_BORDER = "rgba(255,255,255,0.10)";
-const BTN_BG = "rgba(255,255,255,0.10)";
-const BTN_BORDER = "rgba(255,255,255,0.14)";
-const TEXT_MAIN = "rgba(255,255,255,0.92)";
-const TEXT_MUTED = "rgba(255,255,255,0.65)";
+const WORKSPACE_BG = "#F1F3F6";
+const TOPBAR_BG = "rgba(255,255,255,0.94)";
+const TOPBAR_BORDER = "rgba(20,26,34,0.12)";
+const BTN_BG = "rgba(20,26,34,0.06)";
+const BTN_BORDER = "rgba(20,26,34,0.16)";
+const TEXT_MAIN = "rgba(20,26,34,0.94)";
+const TEXT_MUTED = "rgba(20,26,34,0.62)";
 const ACCENT = "#2563EB";
 
 const DEFAULT_COVER = "#8B5CF6";
@@ -104,12 +104,21 @@ function HeaderButton({
         backgroundColor: primary ? ACCENT : BTN_BG,
         borderWidth: primary ? 0 : 1,
         borderColor: BTN_BORDER,
-        paddingHorizontal: 14,
-        paddingVertical: 10,
+        paddingHorizontal: 16,
+        paddingVertical: 11,
         borderRadius: 12,
+        shadowColor: primary ? "#2563EB" : "#000",
+        shadowOpacity: primary ? 0.35 : 0.18,
+        shadowRadius: 10,
+        shadowOffset: { width: 0, height: 6 },
+        boxShadow: primary
+          ? "0 10px 24px rgba(37,99,235,0.35)"
+          : "0 8px 20px rgba(0,0,0,0.24)",
       }}
     >
-      <Text style={{ color: "#fff", fontWeight: "900" }}>{label}</Text>
+      <Text style={{ color: primary ? "#fff" : "#121826", fontWeight: "900" }}>
+        {label}
+      </Text>
     </Pressable>
   );
 }
@@ -135,7 +144,9 @@ function SmallActionButton({
         borderColor: danger ? "rgba(255,255,255,0.18)" : BTN_BORDER,
       }}
     >
-      <Text style={{ color: "#fff", fontWeight: "900" }}>{label}</Text>
+      <Text style={{ color: danger ? "#fff" : "#121826", fontWeight: "900" }}>
+        {label}
+      </Text>
     </Pressable>
   );
 }
@@ -238,19 +249,20 @@ export default function Explore() {
       {/* Header */}
       <View
         style={{
-          paddingTop: 18,
-          paddingHorizontal: 18,
-          paddingBottom: 12,
+          paddingTop: 20,
+          paddingHorizontal: 20,
+          paddingBottom: 14,
           borderBottomWidth: 1,
           borderBottomColor: TOPBAR_BORDER,
           backgroundColor: TOPBAR_BG,
           flexDirection: "row",
           alignItems: "center",
           justifyContent: "space-between",
+          backdropFilter: "blur(10px)",
         }}
       >
         <View>
-          <Text style={{ fontSize: 28, fontWeight: "900", color: "#fff" }}>
+          <Text style={{ fontSize: 28, fontWeight: "900", color: "#121826" }}>
             Explore
           </Text>
           <Text style={{ color: TEXT_MUTED, marginTop: 2 }}>
@@ -268,17 +280,23 @@ export default function Explore() {
       </View>
 
       {/* Grid */}
-      <ScrollView contentContainerStyle={{ padding: 18 }}>
+      <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 28 }}>
         {grid.length === 0 && !loading ? (
           <View
             style={{
-              marginTop: 50,
+              marginTop: 70,
               alignItems: "center",
               justifyContent: "center",
               gap: 10,
+              backgroundColor: "rgba(20,26,34,0.04)",
+              borderWidth: 1,
+              borderColor: "rgba(20,26,34,0.12)",
+              borderRadius: 18,
+              paddingVertical: 26,
+              paddingHorizontal: 18,
             }}
           >
-            <Text style={{ fontSize: 18, fontWeight: "900", color: "#fff" }}>
+            <Text style={{ fontSize: 18, fontWeight: "900", color: "#121826" }}>
               No notes yet
             </Text>
             <Text
@@ -292,9 +310,14 @@ export default function Explore() {
               style={{
                 marginTop: 10,
                 backgroundColor: ACCENT,
-                paddingHorizontal: 16,
+                paddingHorizontal: 18,
                 paddingVertical: 12,
                 borderRadius: 12,
+                shadowColor: "#2563EB",
+                shadowOpacity: 0.35,
+                shadowRadius: 10,
+                shadowOffset: { width: 0, height: 6 },
+                boxShadow: "0 10px 24px rgba(37,99,235,0.35)",
               }}
             >
               <Text style={{ color: "#fff", fontWeight: "900" }}>
@@ -303,12 +326,27 @@ export default function Explore() {
             </Pressable>
           </View>
         ) : (
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 22 }}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 18 }}>
             {grid.map((n) => {
               const cover = n.coverColor || DEFAULT_COVER;
 
               return (
-                <View key={n.id} style={{ width: 170 }}>
+                <View
+                  key={n.id}
+                  style={{
+                    width: 178,
+                    borderRadius: 16,
+                    padding: 10,
+                    borderWidth: 1,
+                    borderColor: "rgba(20,26,34,0.12)",
+                    backgroundColor: "rgba(20,26,34,0.04)",
+                    shadowColor: "#000",
+                    shadowOpacity: 0.2,
+                    shadowRadius: 10,
+                    shadowOffset: { width: 0, height: 6 },
+                    boxShadow: "0 10px 24px rgba(0,0,0,0.25)",
+                  }}
+                >
                   <Pressable
                     onPress={() => {
                       if (editMode) return;
@@ -383,15 +421,16 @@ export default function Explore() {
               alignSelf: "center",
               width: 360,
               maxWidth: "100%",
-              backgroundColor: "#0F1638",
+              backgroundColor: "#FFFFFF",
               borderRadius: 18,
               padding: 16,
               gap: 12,
               borderWidth: 1,
-              borderColor: "rgba(255,255,255,0.10)",
+              borderColor: "rgba(20,26,34,0.12)",
+              boxShadow: "0 18px 44px rgba(0,0,0,0.38)",
             }}
           >
-            <Text style={{ fontSize: 16, fontWeight: "900", color: "#fff" }}>
+            <Text style={{ fontSize: 16, fontWeight: "900", color: "#121826" }}>
               Create note
             </Text>
 
@@ -399,15 +438,15 @@ export default function Explore() {
               value={createTitle}
               onChangeText={setCreateTitle}
               placeholder="Note name"
-              placeholderTextColor="rgba(255,255,255,0.45)"
+              placeholderTextColor="rgba(20,26,34,0.46)"
               style={{
                 height: 46,
                 borderRadius: 12,
                 paddingHorizontal: 12,
-                backgroundColor: "rgba(255,255,255,0.08)",
+                backgroundColor: "rgba(20,26,34,0.05)",
                 borderWidth: 1,
-                borderColor: "rgba(255,255,255,0.12)",
-                color: "#fff",
+                borderColor: "rgba(20,26,34,0.12)",
+                color: "#121826",
                 fontWeight: "700",
               }}
               autoFocus
@@ -451,13 +490,15 @@ export default function Explore() {
                   flex: 1,
                   paddingVertical: 12,
                   borderRadius: 12,
-                  backgroundColor: "rgba(255,255,255,0.10)",
+                  backgroundColor: "rgba(20,26,34,0.06)",
                   borderWidth: 1,
-                  borderColor: "rgba(255,255,255,0.12)",
+                  borderColor: "rgba(20,26,34,0.12)",
                   alignItems: "center",
                 }}
               >
-                <Text style={{ color: "#fff", fontWeight: "900" }}>Cancel</Text>
+                <Text style={{ color: "#121826", fontWeight: "900" }}>
+                  Cancel
+                </Text>
               </Pressable>
 
               <Pressable
@@ -499,15 +540,16 @@ export default function Explore() {
               alignSelf: "center",
               width: 340,
               maxWidth: "100%",
-              backgroundColor: "#0F1638",
+              backgroundColor: "#FFFFFF",
               borderRadius: 18,
               padding: 16,
               gap: 12,
               borderWidth: 1,
-              borderColor: "rgba(255,255,255,0.10)",
+              borderColor: "rgba(20,26,34,0.12)",
+              boxShadow: "0 18px 44px rgba(0,0,0,0.38)",
             }}
           >
-            <Text style={{ fontSize: 16, fontWeight: "900", color: "#fff" }}>
+            <Text style={{ fontSize: 16, fontWeight: "900", color: "#121826" }}>
               Rename note
             </Text>
 
@@ -515,15 +557,15 @@ export default function Explore() {
               value={renameValue}
               onChangeText={setRenameValue}
               placeholder="Note name"
-              placeholderTextColor="rgba(255,255,255,0.45)"
+              placeholderTextColor="rgba(20,26,34,0.46)"
               style={{
                 height: 46,
                 borderRadius: 12,
                 paddingHorizontal: 12,
-                backgroundColor: "rgba(255,255,255,0.08)",
+                backgroundColor: "rgba(20,26,34,0.05)",
                 borderWidth: 1,
-                borderColor: "rgba(255,255,255,0.12)",
-                color: "#fff",
+                borderColor: "rgba(20,26,34,0.12)",
+                color: "#121826",
                 fontWeight: "700",
               }}
               autoFocus
@@ -536,13 +578,15 @@ export default function Explore() {
                   flex: 1,
                   paddingVertical: 12,
                   borderRadius: 12,
-                  backgroundColor: "rgba(255,255,255,0.10)",
+                  backgroundColor: "rgba(20,26,34,0.06)",
                   borderWidth: 1,
-                  borderColor: "rgba(255,255,255,0.12)",
+                  borderColor: "rgba(20,26,34,0.12)",
                   alignItems: "center",
                 }}
               >
-                <Text style={{ color: "#fff", fontWeight: "900" }}>Cancel</Text>
+                <Text style={{ color: "#121826", fontWeight: "900" }}>
+                  Cancel
+                </Text>
               </Pressable>
 
               <Pressable
@@ -584,15 +628,16 @@ export default function Explore() {
               alignSelf: "center",
               width: 340,
               maxWidth: "100%",
-              backgroundColor: "#0F1638",
+              backgroundColor: "#FFFFFF",
               borderRadius: 18,
               padding: 16,
               gap: 12,
               borderWidth: 1,
-              borderColor: "rgba(255,255,255,0.10)",
+              borderColor: "rgba(20,26,34,0.12)",
+              boxShadow: "0 18px 44px rgba(0,0,0,0.38)",
             }}
           >
-            <Text style={{ fontSize: 16, fontWeight: "900", color: "#fff" }}>
+            <Text style={{ fontSize: 16, fontWeight: "900", color: "#121826" }}>
               Delete note?
             </Text>
             <Text style={{ color: TEXT_MUTED }}>This can’t be undone.</Text>
@@ -604,13 +649,15 @@ export default function Explore() {
                   flex: 1,
                   paddingVertical: 12,
                   borderRadius: 12,
-                  backgroundColor: "rgba(255,255,255,0.10)",
+                  backgroundColor: "rgba(20,26,34,0.06)",
                   borderWidth: 1,
-                  borderColor: "rgba(255,255,255,0.12)",
+                  borderColor: "rgba(20,26,34,0.12)",
                   alignItems: "center",
                 }}
               >
-                <Text style={{ color: "#fff", fontWeight: "900" }}>Cancel</Text>
+                <Text style={{ color: "#121826", fontWeight: "900" }}>
+                  Cancel
+                </Text>
               </Pressable>
 
               <Pressable

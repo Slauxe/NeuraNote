@@ -1,6 +1,7 @@
 import Slider from "@react-native-community/slider";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
+  ChevronLeft,
   Eraser,
   LassoSelect,
   MoreVertical,
@@ -8,7 +9,6 @@ import {
   PenLine,
   RotateCcw,
   RotateCw,
-  SlidersHorizontal,
   Trash2,
 } from "lucide-react-native";
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -53,15 +53,16 @@ type Stroke = {
 };
 
 // Theme
-const WORKSPACE_BG = "#0B1026"; // deep violet/blue
-const TOPBAR_BG = "rgba(15, 22, 56, 0.92)";
-const TOPBAR_BORDER = "rgba(255,255,255,0.10)";
-const BTN_BG = "rgba(255,255,255,0.10)";
+const WORKSPACE_BG = "#ECEDEF";
+const TOPBAR_BG = "rgba(255,255,255,0.92)";
+const TOPBAR_BORDER = "rgba(22,26,33,0.12)";
+const BTN_BG = "rgba(20,26,34,0.05)";
 const BTN_BG_ACTIVE = "#FFFFFF";
-const BTN_BORDER = "rgba(255,255,255,0.14)";
+const BTN_BORDER = "rgba(20,26,34,0.16)";
 
 const PAGE_BG = "#ffffff";
-const PAGE_BORDER = "rgba(255,255,255,0.12)";
+const PAGE_BORDER = "rgba(20,26,34,0.18)";
+const TOOLBAR_MIN_TOP = 72;
 
 const ERASER_MULT = 10;
 
@@ -174,6 +175,15 @@ function computeBBox(points: Point[]) {
 
 function colorFromHue(h: number) {
   return `hsl(${Math.round(h)}, 100%, 50%)`;
+}
+
+function escapeHtml(input: string) {
+  return input
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function HueBar({ width, height }: { width: number; height: number }) {
@@ -636,14 +646,14 @@ export default function Index() {
   // Toolbar drag + orientation
   const [toolbarOrientation, setToolbarOrientation] = useState<
     "horizontal" | "vertical"
-  >("horizontal");
+  >("vertical");
   const [isToolbarModeOpen, setIsToolbarModeOpen] = useState(false);
 
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
   const [toolbarSize, setToolbarSize] = useState({ w: 0, h: 0 });
 
   // toolbar position (absolute)
-  const [toolbarPos, setToolbarPos] = useState({ x: 12, y: 12 });
+  const [toolbarPos, setToolbarPos] = useState({ x: 12, y: 72 });
 
   const toolbarPosRef = useRef(toolbarPos);
   useEffect(() => {
@@ -655,11 +665,17 @@ export default function Index() {
   const movedDuringDrag = useRef(false);
   const toolbarDragStart = useRef<{ x: number; y: number } | null>(null);
   const pointerPageIndex = useRef<number | null>(null);
+  const ctrlWheelAccum = useRef(0);
 
-  // Shared size
-  const [sizeIndex, setSizeIndex] = useState(0);
-  const penWidth = SIZE_OPTIONS[sizeIndex].width;
+  // Tool sizes (separate pen/eraser)
+  const [penSizeIndex, setPenSizeIndex] = useState(0);
+  const [eraserSizeIndex, setEraserSizeIndex] = useState(2);
+  const penWidth = SIZE_OPTIONS[penSizeIndex].width;
+  const eraserWidth = SIZE_OPTIONS[eraserSizeIndex].width * ERASER_MULT;
   const [isSizeModalOpen, setIsSizeModalOpen] = useState(false);
+  const [sizeModalTool, setSizeModalTool] = useState<"pen" | "eraser">("pen");
+  const lastPenTapMs = useRef(0);
+  const lastEraserTapMs = useRef(0);
 
   // Pen color
   const [hue, setHue] = useState(0);
@@ -673,7 +689,7 @@ export default function Index() {
 
   // Effective settings depend on tool
   const activeColor = tool === "eraser" ? PAGE_BG : penColor;
-  const activeWidth = tool === "eraser" ? penWidth * ERASER_MULT : penWidth;
+  const activeWidth = tool === "eraser" ? eraserWidth : penWidth;
   const eraserRadius = activeWidth / 2;
 
   // Option B refs (latest brush settings)
@@ -824,7 +840,10 @@ export default function Index() {
   const clampToolbarPos = (x: number, y: number) => {
     const maxX = Math.max(0, containerSize.w - toolbarSize.w);
     const maxY = Math.max(0, containerSize.h - toolbarSize.h);
-    return { x: clamp(x, 0, maxX), y: clamp(y, 0, maxY) };
+    return {
+      x: clamp(x, 0, maxX),
+      y: clamp(y, TOOLBAR_MIN_TOP, maxY),
+    };
   };
 
   // When orientation changes, size changes -> keep toolbar in view
@@ -987,20 +1006,10 @@ export default function Index() {
 
   const getLocalPagePoint = (e: any): Point | null => {
     const ne = e?.nativeEvent ?? {};
-    let lx =
-      typeof ne.locationX === "number"
-        ? ne.locationX
-        : typeof ne.offsetX === "number"
-          ? ne.offsetX
-          : null;
-    let ly =
-      typeof ne.locationY === "number"
-        ? ne.locationY
-        : typeof ne.offsetY === "number"
-          ? ne.offsetY
-          : null;
+    let lx: number | null = null;
+    let ly: number | null = null;
 
-    if ((lx == null || ly == null) && Platform.OS === "web") {
+    if (Platform.OS === "web") {
       const targetRect = e?.currentTarget?.getBoundingClientRect?.();
       if (
         targetRect &&
@@ -1010,6 +1019,19 @@ export default function Index() {
         lx = ne.clientX - targetRect.left;
         ly = ne.clientY - targetRect.top;
       }
+    } else {
+      lx =
+        typeof ne.locationX === "number"
+          ? ne.locationX
+          : typeof ne.offsetX === "number"
+            ? ne.offsetX
+            : null;
+      ly =
+        typeof ne.locationY === "number"
+          ? ne.locationY
+          : typeof ne.offsetY === "number"
+            ? ne.offsetY
+            : null;
     }
 
     if (lx == null || ly == null) return null;
@@ -1019,6 +1041,37 @@ export default function Index() {
     if (x < 0 || y < 0 || x > PAGE_W || y > PAGE_H) return null;
     return { x, y };
   };
+
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+
+    const onWheel = (ev: WheelEvent) => {
+      if (!ev.ctrlKey) return;
+
+      // Stop browser/page zoom so only note-page zoom changes.
+      ev.preventDefault();
+
+      const dy = Number(ev.deltaY ?? 0);
+      if (!Number.isFinite(dy) || dy === 0) return;
+
+      ctrlWheelAccum.current += dy;
+      const stepTrigger = 48;
+
+      while (ctrlWheelAccum.current <= -stepTrigger) {
+        setZoom((z) => clampZoom(z + 0.1));
+        ctrlWheelAccum.current += stepTrigger;
+      }
+      while (ctrlWheelAccum.current >= stepTrigger) {
+        setZoom((z) => clampZoom(z - 0.1));
+        ctrlWheelAccum.current -= stepTrigger;
+      }
+    };
+
+    window.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      window.removeEventListener("wheel", onWheel as any);
+    };
+  }, []);
 
   const recomputePath = () => {
     if (Platform.OS === "web") {
@@ -1349,6 +1402,70 @@ export default function Index() {
     setCurrentPageIndex(nextCurrentIndex);
   };
 
+  const exportAsPdf = () => {
+    const snapshotPages =
+      pages.length > 0 ? pages.map((p) => p.slice()) : [[] as Stroke[]];
+    const idx = Math.max(
+      0,
+      Math.min(snapshotPages.length - 1, currentPageIndex),
+    );
+    snapshotPages[idx] = strokes.slice();
+
+    if (Platform.OS !== "web") {
+      return;
+    }
+
+    const pageSvgs = snapshotPages
+      .map((pageStrokes) => {
+        const paths = pageStrokes
+          .map((s) => {
+            const d = escapeHtml(s.d);
+            const c = escapeHtml(s.c);
+            return `<path d="${d}" stroke="${c}" stroke-width="${s.w}" fill="none" stroke-linecap="round" stroke-linejoin="round" transform="translate(${s.dx} ${s.dy})" />`;
+          })
+          .join("");
+
+        return `<div class="page"><svg viewBox="0 0 ${PAGE_W} ${PAGE_H}" xmlns="http://www.w3.org/2000/svg">${paths}</svg></div>`;
+      })
+      .join("");
+
+    const title = `NeuraNote ${new Date().toISOString().slice(0, 10)}`;
+    const html = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeHtml(title)}</title>
+    <style>
+      @page { size: Letter portrait; margin: 0; }
+      html, body { margin: 0; padding: 0; background: #ddd; }
+      .page {
+        width: 8.5in;
+        height: 11in;
+        background: #fff;
+        margin: 0 auto 12px auto;
+        page-break-after: always;
+        break-after: page;
+      }
+      .page:last-child { page-break-after: auto; break-after: auto; }
+      .page svg { width: 100%; height: 100%; display: block; }
+      @media print {
+        html, body { background: #fff; }
+        .page { margin: 0; box-shadow: none; }
+      }
+    </style>
+  </head>
+  <body>${pageSvgs}</body>
+</html>`;
+
+    const popup = window.open("", "_blank");
+    if (!popup) return;
+    popup.document.open();
+    popup.document.write(html);
+    popup.document.close();
+    popup.focus();
+    setTimeout(() => popup.print(), 120);
+  };
+
   // Pointer/responder handlers scoped to one physical page
   const getPageHandlers = (pageIndex: number) => {
     if (Platform.OS === "web") {
@@ -1542,7 +1659,7 @@ export default function Index() {
   };
 
   const iconOn = "#0B1026";
-  const iconOff = "rgba(255,255,255,0.92)";
+  const iconOff = "rgba(12,18,28,0.86)";
 
   const toolbarRow =
     toolbarOrientation === "horizontal"
@@ -1570,6 +1687,36 @@ export default function Index() {
         });
       }}
     >
+      <Pressable
+        onPress={() => {
+          router.push("/(tabs)/explore");
+        }}
+        style={{
+          position: "absolute",
+          left: 14,
+          top: 14,
+          zIndex: 70,
+          height: 42,
+          paddingHorizontal: 14,
+          borderRadius: 12,
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 6,
+          backgroundColor: "rgba(255,255,255,0.94)",
+          borderWidth: 1,
+          borderColor: TOPBAR_BORDER,
+          shadowColor: "#000",
+          shadowOpacity: 0.12,
+          shadowRadius: 8,
+          shadowOffset: { width: 0, height: 3 },
+          boxShadow: "0 4px 16px rgba(0,0,0,0.14)",
+          backdropFilter: "blur(4px)",
+        }}
+      >
+        <ChevronLeft size={18} color="#121826" />
+        <Text style={{ color: "#121826", fontWeight: "900" }}>Back</Text>
+      </Pressable>
+
       {/* Floating, draggable toolbar */}
       <View
         style={{
@@ -1589,11 +1736,17 @@ export default function Index() {
         <View
           style={[
             {
-              padding: 10,
-              borderRadius: 16,
+              padding: 8,
+              borderRadius: 18,
               borderWidth: 1,
               borderColor: TOPBAR_BORDER,
               backgroundColor: TOPBAR_BG,
+              shadowColor: "#000",
+              shadowOpacity: 0.12,
+              shadowRadius: 10,
+              shadowOffset: { width: 0, height: 5 },
+              boxShadow: "0 8px 24px rgba(0,0,0,0.16)",
+              backdropFilter: "blur(4px)",
             },
             toolbarRow,
           ]}
@@ -1607,9 +1760,9 @@ export default function Index() {
               borderRadius: 14,
               alignItems: "center",
               justifyContent: "center",
-              backgroundColor: "rgba(255,255,255,0.06)",
+              backgroundColor: "rgba(20,26,34,0.05)",
               borderWidth: 1,
-              borderColor: "rgba(255,255,255,0.12)",
+              borderColor: "rgba(20,26,34,0.14)",
             }}
           >
             <MoreVertical size={20} color={iconOff} />
@@ -1617,11 +1770,19 @@ export default function Index() {
 
           <IconButton
             onPress={() => {
-              setTool("pen");
-              setSelectedIds([]);
-              setLassoPath("");
-              setEraserCursor(null);
-              lastEraserPoint.current = null;
+              const now = Date.now();
+              if (now - lastPenTapMs.current < 280) {
+                setTool("pen");
+                setSizeModalTool("pen");
+                setIsSizeModalOpen(true);
+              } else {
+                setTool("pen");
+                setSelectedIds([]);
+                setLassoPath("");
+                setEraserCursor(null);
+                lastEraserPoint.current = null;
+              }
+              lastPenTapMs.current = now;
             }}
             active={tool === "pen"}
           >
@@ -1630,9 +1791,17 @@ export default function Index() {
 
           <IconButton
             onPress={() => {
-              setTool("eraser");
-              setSelectedIds([]);
-              setLassoPath("");
+              const now = Date.now();
+              if (now - lastEraserTapMs.current < 280) {
+                setTool("eraser");
+                setSizeModalTool("eraser");
+                setIsSizeModalOpen(true);
+              } else {
+                setTool("eraser");
+                setSelectedIds([]);
+                setLassoPath("");
+              }
+              lastEraserTapMs.current = now;
             }}
             active={tool === "eraser"}
           >
@@ -1653,34 +1822,6 @@ export default function Index() {
               size={20}
               color={tool === "lasso" ? iconOn : iconOff}
             />
-          </IconButton>
-
-          <IconButton onPress={() => setIsSizeModalOpen(true)}>
-            <View style={{ alignItems: "center", justifyContent: "center" }}>
-              <SlidersHorizontal size={20} color={iconOff} />
-              <View
-                style={{
-                  position: "absolute",
-                  right: -10,
-                  top: -10,
-                  minWidth: 22,
-                  height: 22,
-                  paddingHorizontal: 6,
-                  borderRadius: 999,
-                  alignItems: "center",
-                  justifyContent: "center",
-                  backgroundColor: "rgba(255,255,255,0.18)",
-                  borderWidth: 1,
-                  borderColor: "rgba(255,255,255,0.20)",
-                }}
-              >
-                <Text
-                  style={{ color: "#fff", fontSize: 12, fontWeight: "900" }}
-                >
-                  {SIZE_OPTIONS[sizeIndex].label}
-                </Text>
-              </View>
-            </View>
           </IconButton>
 
           <IconButton
@@ -1706,7 +1847,7 @@ export default function Index() {
               </Text>
               <Text
                 style={{
-                  color: "rgba(255,255,255,0.75)",
+                  color: "rgba(20,26,34,0.72)",
                   fontSize: 10,
                   lineHeight: 12,
                 }}
@@ -1714,6 +1855,12 @@ export default function Index() {
                 {currentPageIndex + 1}/{Math.max(1, pages.length)}
               </Text>
             </View>
+          </IconButton>
+
+          <IconButton onPress={exportAsPdf}>
+            <Text style={{ color: iconOff, fontWeight: "900", fontSize: 11 }}>
+              PDF
+            </Text>
           </IconButton>
 
           {tool === "lasso" && (
@@ -1872,14 +2019,16 @@ export default function Index() {
                     height: PAGE_H * zoom,
                     backgroundColor: PAGE_BG,
                     borderWidth: pageIsActive ? 2 : 1,
-                    borderColor: pageIsActive ? "#9EC5FF" : PAGE_BORDER,
+                    borderColor: pageIsActive
+                      ? "rgba(37,99,235,0.55)"
+                      : PAGE_BORDER,
                     borderRadius: 10,
                     overflow: "hidden",
                     shadowColor: "#000",
-                    shadowOpacity: 0.25,
-                    shadowRadius: 18,
-                    shadowOffset: { width: 0, height: 10 },
-                    boxShadow: "0 14px 40px rgba(0,0,0,0.35)",
+                    shadowOpacity: 0.14,
+                    shadowRadius: 12,
+                    shadowOffset: { width: 0, height: 6 },
+                    boxShadow: "0 8px 24px rgba(0,0,0,0.16)",
                     touchAction: "none",
                     userSelect: "none",
                   } as any
@@ -1954,7 +2103,7 @@ export default function Index() {
                         r={eraserRadius}
                         stroke="rgba(0,0,0,0.45)"
                         strokeWidth={2}
-                        fill="rgba(255,255,255,0.18)"
+                        fill="rgba(20,26,34,0.18)"
                         vectorEffect="non-scaling-stroke"
                       />
                     ) : null}
@@ -1988,15 +2137,15 @@ export default function Index() {
               alignSelf: "center",
               width: 320,
               maxWidth: "100%",
-              backgroundColor: "#0F1638",
+              backgroundColor: "#FFFFFF",
               borderRadius: 18,
               padding: 16,
               gap: 12,
               borderWidth: 1,
-              borderColor: "rgba(255,255,255,0.10)",
+              borderColor: "rgba(20,26,34,0.12)",
             }}
           >
-            <Text style={{ fontSize: 16, fontWeight: "900", color: "#fff" }}>
+            <Text style={{ fontSize: 16, fontWeight: "900", color: "#121826" }}>
               Toolbar layout
             </Text>
 
@@ -2014,7 +2163,7 @@ export default function Index() {
                   borderColor:
                     toolbarOrientation === "horizontal"
                       ? "#fff"
-                      : "rgba(255,255,255,0.18)",
+                      : "rgba(20,26,34,0.18)",
                   backgroundColor:
                     toolbarOrientation === "horizontal"
                       ? "rgba(255,255,255,0.14)"
@@ -2022,7 +2171,7 @@ export default function Index() {
                   alignItems: "center",
                 }}
               >
-                <Text style={{ color: "#fff", fontWeight: "900" }}>
+                <Text style={{ color: "#121826", fontWeight: "900" }}>
                   Horizontal
                 </Text>
               </Pressable>
@@ -2040,7 +2189,7 @@ export default function Index() {
                   borderColor:
                     toolbarOrientation === "vertical"
                       ? "#fff"
-                      : "rgba(255,255,255,0.18)",
+                      : "rgba(20,26,34,0.18)",
                   backgroundColor:
                     toolbarOrientation === "vertical"
                       ? "rgba(255,255,255,0.14)"
@@ -2048,7 +2197,7 @@ export default function Index() {
                   alignItems: "center",
                 }}
               >
-                <Text style={{ color: "#fff", fontWeight: "900" }}>
+                <Text style={{ color: "#121826", fontWeight: "900" }}>
                   Vertical
                 </Text>
               </Pressable>
@@ -2059,13 +2208,13 @@ export default function Index() {
               style={{
                 paddingVertical: 12,
                 borderRadius: 12,
-                backgroundColor: "rgba(255,255,255,0.10)",
+                backgroundColor: "rgba(20,26,34,0.06)",
                 borderWidth: 1,
-                borderColor: "rgba(255,255,255,0.12)",
+                borderColor: "rgba(20,26,34,0.12)",
                 alignItems: "center",
               }}
             >
-              <Text style={{ color: "#fff", fontWeight: "900" }}>Close</Text>
+              <Text style={{ color: "#121826", fontWeight: "900" }}>Close</Text>
             </Pressable>
           </Pressable>
         </Pressable>
@@ -2090,21 +2239,21 @@ export default function Index() {
           <Pressable
             onPress={() => {}}
             style={{
-              backgroundColor: "#0F1638",
+              backgroundColor: "#FFFFFF",
               borderRadius: 18,
               padding: 16,
               gap: 12,
               borderWidth: 1,
-              borderColor: "rgba(255,255,255,0.10)",
+              borderColor: "rgba(20,26,34,0.12)",
               alignSelf: "center",
               width: 420,
               maxWidth: "100%",
             }}
           >
-            <Text style={{ fontSize: 16, fontWeight: "900", color: "#fff" }}>
+            <Text style={{ fontSize: 16, fontWeight: "900", color: "#121826" }}>
               Pages
             </Text>
-            <Text style={{ color: "rgba(255,255,255,0.72)", fontSize: 12 }}>
+            <Text style={{ color: "rgba(20,26,34,0.66)", fontSize: 12 }}>
               Current page {currentPageIndex + 1} of {Math.max(1, pages.length)}
             </Text>
 
@@ -2116,12 +2265,12 @@ export default function Index() {
                   paddingVertical: 12,
                   borderRadius: 12,
                   borderWidth: 1,
-                  borderColor: "rgba(255,255,255,0.20)",
-                  backgroundColor: "rgba(255,255,255,0.10)",
+                  borderColor: "rgba(20,26,34,0.16)",
+                  backgroundColor: "rgba(20,26,34,0.06)",
                   alignItems: "center",
                 }}
               >
-                <Text style={{ color: "#fff", fontWeight: "900" }}>
+                <Text style={{ color: "#121826", fontWeight: "900" }}>
                   Add Below
                 </Text>
               </Pressable>
@@ -2133,14 +2282,19 @@ export default function Index() {
                   paddingVertical: 12,
                   borderRadius: 12,
                   borderWidth: 1,
-                  borderColor: "rgba(255,255,255,0.20)",
+                  borderColor: "rgba(20,26,34,0.16)",
                   backgroundColor:
-                    pages.length <= 1 ? "rgba(255,255,255,0.06)" : "#ff3b30",
+                    pages.length <= 1 ? "rgba(20,26,34,0.06)" : "#ff3b30",
                   alignItems: "center",
                   opacity: pages.length <= 1 ? 0.6 : 1,
                 }}
               >
-                <Text style={{ color: "#fff", fontWeight: "900" }}>
+                <Text
+                  style={{
+                    color: pages.length <= 1 ? "#121826" : "#fff",
+                    fontWeight: "900",
+                  }}
+                >
                   Remove Current
                 </Text>
               </Pressable>
@@ -2170,11 +2324,11 @@ export default function Index() {
                         borderRadius: 12,
                         borderWidth: 1,
                         borderColor: selected
-                          ? "#fff"
-                          : "rgba(255,255,255,0.18)",
+                          ? "#121826"
+                          : "rgba(20,26,34,0.18)",
                         backgroundColor: selected
-                          ? "rgba(255,255,255,0.14)"
-                          : "rgba(255,255,255,0.06)",
+                          ? "rgba(20,26,34,0.08)"
+                          : "rgba(20,26,34,0.04)",
                       }}
                     >
                       <View
@@ -2189,7 +2343,7 @@ export default function Index() {
                           selected={selected}
                           label={`Page ${idx + 1}`}
                         />
-                        <Text style={{ color: "#fff", fontWeight: "800" }}>
+                        <Text style={{ color: "#121826", fontWeight: "800" }}>
                           {selected ? "Current" : "Select"}
                         </Text>
                       </View>
@@ -2204,15 +2358,15 @@ export default function Index() {
                         alignItems: "center",
                         justifyContent: "center",
                         borderWidth: 1,
-                        borderColor: "rgba(255,255,255,0.18)",
+                        borderColor: "rgba(20,26,34,0.18)",
                         backgroundColor:
                           idx === 0
-                            ? "rgba(255,255,255,0.04)"
-                            : "rgba(255,255,255,0.08)",
+                            ? "rgba(20,26,34,0.04)"
+                            : "rgba(20,26,34,0.08)",
                         opacity: idx === 0 ? 0.5 : 1,
                       }}
                     >
-                      <Text style={{ color: "#fff", fontWeight: "900" }}>
+                      <Text style={{ color: "#121826", fontWeight: "900" }}>
                         ↑
                       </Text>
                     </Pressable>
@@ -2226,15 +2380,15 @@ export default function Index() {
                         alignItems: "center",
                         justifyContent: "center",
                         borderWidth: 1,
-                        borderColor: "rgba(255,255,255,0.18)",
+                        borderColor: "rgba(20,26,34,0.18)",
                         backgroundColor:
                           idx === pages.length - 1
-                            ? "rgba(255,255,255,0.04)"
-                            : "rgba(255,255,255,0.08)",
+                            ? "rgba(20,26,34,0.04)"
+                            : "rgba(20,26,34,0.08)",
                         opacity: idx === pages.length - 1 ? 0.5 : 1,
                       }}
                     >
-                      <Text style={{ color: "#fff", fontWeight: "900" }}>
+                      <Text style={{ color: "#121826", fontWeight: "900" }}>
                         ↓
                       </Text>
                     </Pressable>
@@ -2248,13 +2402,13 @@ export default function Index() {
               style={{
                 paddingVertical: 12,
                 borderRadius: 12,
-                backgroundColor: "rgba(255,255,255,0.10)",
+                backgroundColor: "rgba(20,26,34,0.06)",
                 borderWidth: 1,
-                borderColor: "rgba(255,255,255,0.12)",
+                borderColor: "rgba(20,26,34,0.12)",
                 alignItems: "center",
               }}
             >
-              <Text style={{ color: "#fff", fontWeight: "900" }}>Close</Text>
+              <Text style={{ color: "#121826", fontWeight: "900" }}>Close</Text>
             </Pressable>
           </Pressable>
         </Pressable>
@@ -2279,26 +2433,30 @@ export default function Index() {
           <Pressable
             onPress={() => {}}
             style={{
-              backgroundColor: "#0F1638",
+              backgroundColor: "#FFFFFF",
               borderRadius: 18,
               padding: 16,
               gap: 12,
               borderWidth: 1,
-              borderColor: "rgba(255,255,255,0.10)",
+              borderColor: "rgba(20,26,34,0.06)",
             }}
           >
-            <Text style={{ fontSize: 16, fontWeight: "900", color: "#fff" }}>
-              Select size (Pen/Eraser)
+            <Text style={{ fontSize: 16, fontWeight: "900", color: "#121826" }}>
+              Select size ({sizeModalTool === "pen" ? "Pen" : "Eraser"})
             </Text>
 
             <View style={{ flexDirection: "row", gap: 10 }}>
               {SIZE_OPTIONS.map((opt, idx) => {
-                const selected = idx === sizeIndex;
+                const selected =
+                  sizeModalTool === "pen"
+                    ? idx === penSizeIndex
+                    : idx === eraserSizeIndex;
                 return (
                   <Pressable
                     key={opt.label}
                     onPress={() => {
-                      setSizeIndex(idx);
+                      if (sizeModalTool === "pen") setPenSizeIndex(idx);
+                      else setEraserSizeIndex(idx);
                       setIsSizeModalOpen(false);
                     }}
                     style={{
@@ -2306,21 +2464,22 @@ export default function Index() {
                       paddingVertical: 12,
                       borderRadius: 12,
                       borderWidth: 1,
-                      borderColor: selected ? "#fff" : "rgba(255,255,255,0.18)",
+                      borderColor: selected ? "#121826" : "rgba(20,26,34,0.18)",
                       backgroundColor: selected
-                        ? "rgba(255,255,255,0.14)"
-                        : "rgba(255,255,255,0.06)",
+                        ? "rgba(20,26,34,0.08)"
+                        : "rgba(20,26,34,0.04)",
                       alignItems: "center",
                     }}
                   >
-                    <Text style={{ color: "#fff", fontWeight: "900" }}>
+                    <Text style={{ color: "#121826", fontWeight: "900" }}>
                       {opt.label}
                     </Text>
                     <Text
-                      style={{ color: "rgba(255,255,255,0.70)", fontSize: 12 }}
+                      style={{ color: "rgba(20,26,34,0.66)", fontSize: 12 }}
                     >
-                      Pen {opt.width}px • Erase{" "}
-                      {Math.round(opt.width * ERASER_MULT)}px
+                      {sizeModalTool === "pen"
+                        ? `Pen ${opt.width}px`
+                        : `Eraser ${Math.round(opt.width * ERASER_MULT)}px`}
                     </Text>
                   </Pressable>
                 );
@@ -2332,13 +2491,13 @@ export default function Index() {
               style={{
                 paddingVertical: 12,
                 borderRadius: 12,
-                backgroundColor: "rgba(255,255,255,0.10)",
+                backgroundColor: "rgba(20,26,34,0.06)",
                 borderWidth: 1,
-                borderColor: "rgba(255,255,255,0.12)",
+                borderColor: "rgba(20,26,34,0.12)",
                 alignItems: "center",
               }}
             >
-              <Text style={{ color: "#fff", fontWeight: "900" }}>Close</Text>
+              <Text style={{ color: "#121826", fontWeight: "900" }}>Close</Text>
             </Pressable>
           </Pressable>
         </Pressable>
@@ -2368,11 +2527,11 @@ export default function Index() {
             style={{
               width: 340,
               maxWidth: "100%",
-              backgroundColor: "#141414",
+              backgroundColor: "#FFFFFF",
               borderRadius: 18,
               padding: 14,
               borderWidth: 1,
-              borderColor: "rgba(255,255,255,0.08)",
+              borderColor: "rgba(20,26,34,0.12)",
             }}
           >
             <View
@@ -2383,7 +2542,9 @@ export default function Index() {
                 marginBottom: 12,
               }}
             >
-              <Text style={{ color: "#fff", fontSize: 18, fontWeight: "900" }}>
+              <Text
+                style={{ color: "#121826", fontSize: 18, fontWeight: "900" }}
+              >
                 Color
               </Text>
 
@@ -2405,11 +2566,15 @@ export default function Index() {
                     borderRadius: 10,
                     alignItems: "center",
                     justifyContent: "center",
-                    backgroundColor: "rgba(255,255,255,0.08)",
+                    backgroundColor: "rgba(20,26,34,0.06)",
                   }}
                 >
                   <Text
-                    style={{ color: "#fff", fontSize: 18, fontWeight: "900" }}
+                    style={{
+                      color: "#121826",
+                      fontSize: 18,
+                      fontWeight: "900",
+                    }}
                   >
                     +
                   </Text>
@@ -2423,11 +2588,15 @@ export default function Index() {
                     borderRadius: 10,
                     alignItems: "center",
                     justifyContent: "center",
-                    backgroundColor: "rgba(255,255,255,0.08)",
+                    backgroundColor: "rgba(20,26,34,0.06)",
                   }}
                 >
                   <Text
-                    style={{ color: "#fff", fontSize: 18, fontWeight: "900" }}
+                    style={{
+                      color: "#121826",
+                      fontSize: 18,
+                      fontWeight: "900",
+                    }}
                   >
                     ×
                   </Text>
@@ -2443,7 +2612,7 @@ export default function Index() {
                   justifyContent: "space-between",
                 }}
               >
-                <Text style={{ color: "rgba(255,255,255,0.75)", fontSize: 12 }}>
+                <Text style={{ color: "rgba(20,26,34,0.72)", fontSize: 12 }}>
                   Hue
                 </Text>
 
@@ -2454,7 +2623,7 @@ export default function Index() {
                     borderRadius: 999,
                     backgroundColor: penColor,
                     borderWidth: 1,
-                    borderColor: "rgba(255,255,255,0.25)",
+                    borderColor: "rgba(20,26,34,0.25)",
                   }}
                 />
               </View>
@@ -2465,7 +2634,7 @@ export default function Index() {
                   borderRadius: 14,
                   overflow: "hidden",
                   borderWidth: 1,
-                  borderColor: "rgba(255,255,255,0.12)",
+                  borderColor: "rgba(20,26,34,0.12)",
                   justifyContent: "center",
                 }}
               >
@@ -2500,7 +2669,7 @@ export default function Index() {
                 />
               </View>
 
-              <Text style={{ color: "rgba(255,255,255,0.65)", fontSize: 12 }}>
+              <Text style={{ color: "rgba(20,26,34,0.66)", fontSize: 12 }}>
                 Tap a slot to use • Long-press to save
               </Text>
 
@@ -2528,11 +2697,11 @@ export default function Index() {
                         width: 26,
                         height: 26,
                         borderRadius: 999,
-                        backgroundColor: c || "rgba(255,255,255,0.06)",
+                        backgroundColor: c || "rgba(20,26,34,0.06)",
                         borderWidth: selected ? 3 : 1,
                         borderColor: selected
-                          ? "#fff"
-                          : "rgba(255,255,255,0.18)",
+                          ? "#121826"
+                          : "rgba(20,26,34,0.18)",
                       }}
                     />
                   );
