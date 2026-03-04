@@ -11,7 +11,13 @@ export type NoteMeta = {
 
 export type NoteDoc = {
   strokes: any[]; // keep as any[] for now to avoid circular imports from index.tsx
-  pages?: Array<{ id?: string; strokes: any[] }>;
+  pages?: Array<{
+    id?: string;
+    strokes: any[];
+    backgroundDataUrl?: string;
+    backgroundPdfUri?: string;
+    backgroundPdfPageNumber?: number;
+  }>;
   currentPageIndex?: number;
   // Add more later if you want: zoom, page settings, etc.
   // zoom?: number;
@@ -188,6 +194,7 @@ export async function listNotes(): Promise<NoteMeta[]> {
 export async function createNote(
   title = "No name",
   coverColor = "#8B5CF6",
+  initialDoc?: NoteDoc,
 ): Promise<string> {
   const id = newId();
   const t = now();
@@ -197,11 +204,12 @@ export async function createNote(
     title,
     updatedAt: t,
     coverColor,
-    doc: {
-      strokes: [],
-      pages: [{ id: "page-1", strokes: [] }],
-      currentPageIndex: 0,
-    },
+    doc:
+      initialDoc ?? {
+        strokes: [],
+        pages: [{ id: "page-1", strokes: [] }],
+        currentPageIndex: 0,
+      },
   };
 
   await ensureNotesDir();

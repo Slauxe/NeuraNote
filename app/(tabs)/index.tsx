@@ -18,6 +18,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import getStroke from "perfect-freehand";
 
 import {
+  Image,
   Modal,
   PanResponder,
   Platform,
@@ -36,8 +37,14 @@ import Svg, {
   Stop,
 } from "react-native-svg";
 import { createNote, loadNote, saveNote } from "../../lib/notesStorage";
+import PdfPageBackground from "../../components/PdfPageBackground";
 
 type Point = { x: number; y: number };
+type PageBackground = {
+  dataUrl: string | null;
+  pdfUri: string | null;
+  pdfPageNumber: number | null;
+};
 
 type Stroke = {
   id: string;
@@ -526,11 +533,13 @@ function sanitizeStroke(raw: any): Stroke | null {
 
 function normalizeDocToPages(rawDoc: any): {
   pages: Stroke[][];
+  pageBackgrounds: PageBackground[];
   currentPageIndex: number;
 } {
   const rawPages = Array.isArray(rawDoc?.pages) ? rawDoc.pages : null;
 
   let pages: Stroke[][] = [];
+  let pageBackgrounds: PageBackground[] = [];
   if (rawPages && rawPages.length > 0) {
     pages = rawPages.map(
       (pg: any) =>
@@ -538,31 +547,73 @@ function normalizeDocToPages(rawDoc: any): {
           .map(sanitizeStroke)
           .filter(Boolean) as Stroke[],
     );
+    pageBackgrounds = rawPages.map((pg: any) => ({
+      dataUrl:
+        typeof pg?.backgroundDataUrl === "string" ? pg.backgroundDataUrl : null,
+      pdfUri:
+        typeof pg?.backgroundPdfUri === "string" ? pg.backgroundPdfUri : null,
+      pdfPageNumber: Number.isFinite(pg?.backgroundPdfPageNumber)
+        ? Math.max(1, Math.trunc(pg.backgroundPdfPageNumber))
+        : null,
+    }));
   } else {
     const rawStrokes =
       (rawDoc && Array.isArray(rawDoc.strokes) && rawDoc.strokes) || [];
     pages = [rawStrokes.map(sanitizeStroke).filter(Boolean) as Stroke[]];
+    pageBackgrounds = [{ dataUrl: null, pdfUri: null, pdfPageNumber: null }];
   }
 
-  if (pages.length === 0) pages = [[]];
+  if (pages.length === 0) {
+    pages = [[]];
+    pageBackgrounds = [{ dataUrl: null, pdfUri: null, pdfPageNumber: null }];
+  }
+  if (pageBackgrounds.length !== pages.length) {
+    pageBackgrounds = pages.map(
+      (_, i) =>
+        pageBackgrounds[i] ?? { dataUrl: null, pdfUri: null, pdfPageNumber: null },
+    );
+  }
 
   const rawIndex = Number(rawDoc?.currentPageIndex);
   const currentPageIndex = Number.isFinite(rawIndex)
     ? Math.max(0, Math.min(pages.length - 1, Math.trunc(rawIndex)))
     : 0;
 
-  return { pages, currentPageIndex };
+  return { pages, pageBackgrounds, currentPageIndex };
 }
 
-function buildDocFromPages(pages: Stroke[][], currentPageIndex: number) {
+function buildDocFromPages(
+  pages: Stroke[][],
+  pageBackgrounds: PageBackground[],
+  currentPageIndex: number,
+) {
   const safePages = pages.length > 0 ? pages : [[]];
+  const safeBackgrounds = safePages.map(
+    (_, i) =>
+      pageBackgrounds[i] ?? { dataUrl: null, pdfUri: null, pdfPageNumber: null },
+  );
   const clampedIndex = Math.max(
     0,
     Math.min(safePages.length - 1, currentPageIndex),
   );
   return {
     strokes: safePages[clampedIndex] ?? [],
-    pages: safePages.map((p, i) => ({ id: `page-${i + 1}`, strokes: p })),
+    pages: safePages.map((p, i) => ({
+      id: `page-${i + 1}`,
+      strokes: p,
+      ...(safeBackgrounds[i].dataUrl
+        ? { backgroundDataUrl: safeBackgrounds[i].dataUrl as string }
+        : {}),
+      ...(safeBackgrounds[i].pdfUri
+        ? { backgroundPdfUri: safeBackgrounds[i].pdfUri as string }
+        : {}),
+      ...(safeBackgrounds[i].pdfPageNumber
+        ? {
+            backgroundPdfPageNumber:
+              safeBackgrounds[i].pdfPageNumber as number,
+          }
+        : {}),
+    })),
     currentPageIndex: clampedIndex,
   };
 }
@@ -708,6 +759,9 @@ export default function Index() {
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [currentPath, setCurrentPath] = useState("");
   const [pages, setPages] = useState<Stroke[][]>([[]]);
+  const [pageBackgrounds, setPageBackgrounds] = useState<PageBackground[]>([
+    { dataUrl: null, pdfUri: null, pdfPageNumber: null },
+  ]);
   const [currentPageIndex, setCurrentPageIndex] = useState(0);
 
   useEffect(() => {
@@ -764,6 +818,7 @@ export default function Index() {
         const loadedStrokes =
           normalized.pages[normalized.currentPageIndex] ?? [];
         setPages(normalized.pages);
+        setPageBackgrounds(normalized.pageBackgrounds);
         setCurrentPageIndex(normalized.currentPageIndex);
         setStrokes(loadedStrokes);
         setHistory([loadedStrokes]);
@@ -800,14 +855,21 @@ export default function Index() {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
 
     saveTimerRef.current = setTimeout(() => {
-      const doc = buildDocFromPages(pages, currentPageIndex);
+      const doc = buildDocFromPages(pages, pageBackgrounds, currentPageIndex);
       saveNote(activeNoteId, { doc }).catch(() => {});
     }, 450);
 
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [activeNoteId, strokes, hydrating, pages, currentPageIndex]);
+  }, [
+    activeNoteId,
+    strokes,
+    hydrating,
+    pages,
+    pageBackgrounds,
+    currentPageIndex,
+  ]);
 
   // Eraser cursor (outline)
   const [eraserCursor, setEraserCursor] = useState<Point | null>(null);
@@ -955,6 +1017,7 @@ export default function Index() {
         const normalized = normalizeDocToPages(data?.doc);
         const pageStrokes = normalized.pages[normalized.currentPageIndex] ?? [];
         setPages(normalized.pages);
+        setPageBackgrounds(normalized.pageBackgrounds);
         setCurrentPageIndex(normalized.currentPageIndex);
         setStrokes(pageStrokes);
         setHistory([pageStrokes]);
@@ -963,6 +1026,9 @@ export default function Index() {
         // If load fails, keep it empty
         if (!cancelled) {
           setPages([[]]);
+          setPageBackgrounds([
+            { dataUrl: null, pdfUri: null, pdfPageNumber: null },
+          ]);
           setCurrentPageIndex(0);
           setStrokes([]);
           setHistory([[]]);
@@ -992,7 +1058,7 @@ export default function Index() {
       // If you want to save mid-stroke too, remove this guard.
       if (hydrating) return;
 
-      const doc = buildDocFromPages(pages, currentPageIndex);
+      const doc = buildDocFromPages(pages, pageBackgrounds, currentPageIndex);
       saveNote(activeNoteId, { doc }).catch(() => {});
     }, 450);
 
@@ -1002,7 +1068,14 @@ export default function Index() {
         saveTimerRef.current = null;
       }
     };
-  }, [strokes, activeNoteId, hydrating, pages, currentPageIndex]);
+  }, [
+    strokes,
+    activeNoteId,
+    hydrating,
+    pages,
+    pageBackgrounds,
+    currentPageIndex,
+  ]);
 
   const getLocalPagePoint = (e: any): Point | null => {
     const ne = e?.nativeEvent ?? {};
@@ -1335,6 +1408,10 @@ export default function Index() {
 
   const addPageBelowCurrent = () => {
     const safePages = pages.length > 0 ? pages : [[]];
+    const safeBackgrounds = safePages.map(
+      (_, i) =>
+        pageBackgrounds[i] ?? { dataUrl: null, pdfUri: null, pdfPageNumber: null },
+    );
     const insertAt = Math.max(
       0,
       Math.min(safePages.length, currentPageIndex + 1),
@@ -1344,9 +1421,15 @@ export default function Index() {
       [],
       ...safePages.slice(insertAt),
     ];
+    const nextBackgrounds = [
+      ...safeBackgrounds.slice(0, insertAt),
+      { dataUrl: null, pdfUri: null, pdfPageNumber: null },
+      ...safeBackgrounds.slice(insertAt),
+    ];
 
     resetForPageSwitch();
     setPages(nextPages);
+    setPageBackgrounds(nextBackgrounds);
     setCurrentPageIndex(insertAt);
     setStrokes([]);
     setHistory([[]]);
@@ -1355,10 +1438,17 @@ export default function Index() {
 
   const removeCurrentPage = () => {
     const safePages = pages.length > 0 ? pages : [[]];
+    const safeBackgrounds = safePages.map(
+      (_, i) =>
+        pageBackgrounds[i] ?? { dataUrl: null, pdfUri: null, pdfPageNumber: null },
+    );
 
     if (safePages.length <= 1) {
       resetForPageSwitch();
       setPages([[]]);
+      setPageBackgrounds([
+        { dataUrl: null, pdfUri: null, pdfPageNumber: null },
+      ]);
       setCurrentPageIndex(0);
       setStrokes([]);
       setHistory([[]]);
@@ -1367,6 +1457,9 @@ export default function Index() {
     }
 
     const nextPages = safePages.filter((_, i) => i !== currentPageIndex);
+    const nextBackgrounds = safeBackgrounds.filter(
+      (_, i) => i !== currentPageIndex,
+    );
     const nextIndex = Math.max(
       0,
       Math.min(nextPages.length - 1, currentPageIndex),
@@ -1375,6 +1468,7 @@ export default function Index() {
 
     resetForPageSwitch();
     setPages(nextPages);
+    setPageBackgrounds(nextBackgrounds);
     setCurrentPageIndex(nextIndex);
     setStrokes(nextStrokes);
     setHistory([nextStrokes]);
@@ -1383,13 +1477,24 @@ export default function Index() {
 
   const movePage = (from: number, delta: -1 | 1) => {
     const safePages = pages.length > 0 ? pages : [[]];
+    const safeBackgrounds = safePages.map(
+      (_, i) =>
+        pageBackgrounds[i] ?? { dataUrl: null, pdfUri: null, pdfPageNumber: null },
+    );
     const to = from + delta;
     if (from < 0 || from >= safePages.length) return;
     if (to < 0 || to >= safePages.length) return;
 
     const nextPages = safePages.slice();
+    const nextBackgrounds = safeBackgrounds.slice();
     const [moved] = nextPages.splice(from, 1);
+    const [movedBg] = nextBackgrounds.splice(from, 1);
     nextPages.splice(to, 0, moved);
+    nextBackgrounds.splice(to, 0, movedBg ?? {
+      dataUrl: null,
+      pdfUri: null,
+      pdfPageNumber: null,
+    });
 
     let nextCurrentIndex = currentPageIndex;
     if (currentPageIndex === from) nextCurrentIndex = to;
@@ -1399,12 +1504,24 @@ export default function Index() {
       nextCurrentIndex = currentPageIndex + 1;
 
     setPages(nextPages);
+    setPageBackgrounds(nextBackgrounds);
     setCurrentPageIndex(nextCurrentIndex);
   };
 
   const exportAsPdf = () => {
     const snapshotPages =
       pages.length > 0 ? pages.map((p) => p.slice()) : [[] as Stroke[]];
+    const snapshotBackgrounds =
+      snapshotPages.length > 0
+        ? snapshotPages.map(
+            (_, i) =>
+              pageBackgrounds[i] ?? {
+                dataUrl: null,
+                pdfUri: null,
+                pdfPageNumber: null,
+              },
+          )
+        : [{ dataUrl: null, pdfUri: null, pdfPageNumber: null }];
     const idx = Math.max(
       0,
       Math.min(snapshotPages.length - 1, currentPageIndex),
@@ -1416,7 +1533,8 @@ export default function Index() {
     }
 
     const pageSvgs = snapshotPages
-      .map((pageStrokes) => {
+      .map((pageStrokes, pageIndex) => {
+        const bg = snapshotBackgrounds[pageIndex];
         const paths = pageStrokes
           .map((s) => {
             const d = escapeHtml(s.d);
@@ -1424,8 +1542,11 @@ export default function Index() {
             return `<path d="${d}" stroke="${c}" stroke-width="${s.w}" fill="none" stroke-linecap="round" stroke-linejoin="round" transform="translate(${s.dx} ${s.dy})" />`;
           })
           .join("");
+        const bgImg = bg?.dataUrl
+          ? `<img class="page-bg" src="${escapeHtml(bg.dataUrl)}" alt="" />`
+          : "";
 
-        return `<div class="page"><svg viewBox="0 0 ${PAGE_W} ${PAGE_H}" xmlns="http://www.w3.org/2000/svg">${paths}</svg></div>`;
+        return `<div class="page">${bgImg}<svg viewBox="0 0 ${PAGE_W} ${PAGE_H}" xmlns="http://www.w3.org/2000/svg">${paths}</svg></div>`;
       })
       .join("");
 
@@ -1445,9 +1566,25 @@ export default function Index() {
         margin: 0 auto 12px auto;
         page-break-after: always;
         break-after: page;
+        position: relative;
+        overflow: hidden;
       }
       .page:last-child { page-break-after: auto; break-after: auto; }
-      .page svg { width: 100%; height: 100%; display: block; }
+      .page .page-bg {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        z-index: 0;
+      }
+      .page svg {
+        position: relative;
+        z-index: 2;
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
       @media print {
         html, body { background: #fff; }
         .page { margin: 0; box-shadow: none; }
@@ -2010,6 +2147,11 @@ export default function Index() {
           {pages.map((pageStrokes, pageIndex) => {
             const pageIsActive = pageIndex === currentPageIndex;
             const renderStrokes = pageIsActive ? strokes : pageStrokes;
+            const pageBackground = pageBackgrounds[pageIndex] ?? {
+              dataUrl: null,
+              pdfUri: null,
+              pdfPageNumber: null,
+            };
             return (
               <View
                 key={`page-${pageIndex}`}
@@ -2018,10 +2160,8 @@ export default function Index() {
                     width: PAGE_W * zoom,
                     height: PAGE_H * zoom,
                     backgroundColor: PAGE_BG,
-                    borderWidth: pageIsActive ? 2 : 1,
-                    borderColor: pageIsActive
-                      ? "rgba(37,99,235,0.55)"
-                      : PAGE_BORDER,
+                    borderWidth: 1,
+                    borderColor: PAGE_BORDER,
                     borderRadius: 10,
                     overflow: "hidden",
                     shadowColor: "#000",
@@ -2045,7 +2185,47 @@ export default function Index() {
                     } as any
                   }
                 >
-                  <Svg width={PAGE_W} height={PAGE_H} pointerEvents="none">
+                  <View
+                    pointerEvents="none"
+                    style={{
+                      position: "absolute",
+                      left: 0,
+                      top: 0,
+                      width: PAGE_W,
+                      height: PAGE_H,
+                      zIndex: 0,
+                    }}
+                  >
+                    {pageBackground.dataUrl ? (
+                      <Image
+                        source={{ uri: pageBackground.dataUrl }}
+                        style={{
+                          position: "absolute",
+                          left: 0,
+                          top: 0,
+                          width: PAGE_W,
+                          height: PAGE_H,
+                        }}
+                        resizeMode="cover"
+                      />
+                    ) : null}
+                    {!pageBackground.dataUrl &&
+                    pageBackground.pdfUri &&
+                    pageBackground.pdfPageNumber ? (
+                      <PdfPageBackground
+                        uri={pageBackground.pdfUri}
+                        pageNumber={pageBackground.pdfPageNumber}
+                        width={PAGE_W}
+                        height={PAGE_H}
+                      />
+                    ) : null}
+                  </View>
+                  <Svg
+                    width={PAGE_W}
+                    height={PAGE_H}
+                    pointerEvents="none"
+                    style={{ position: "absolute", left: 0, top: 0, zIndex: 2 }}
+                  >
                     {renderStrokes.map((s) => {
                       const selected = pageIsActive && selectedSet.has(s.id);
                       return (
