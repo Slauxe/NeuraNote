@@ -12,10 +12,6 @@ import {
   Trash2,
 } from "lucide-react-native";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-// perfect-freehand provides a variable-width stroke polygon generator
-// we import it here and generate a filled polygon path for new strokes.
-// Note: you still need to `npm install perfect-freehand` or `yarn add perfect-freehand`.
-import getStroke from "perfect-freehand";
 
 import {
   Image,
@@ -36,8 +32,8 @@ import Svg, {
   Rect,
   Stop,
 } from "react-native-svg";
-import { createNote, loadNote, saveNote } from "../../lib/notesStorage";
 import PdfPageBackground from "../../components/PdfPageBackground";
+import { createNote, loadNote, saveNote } from "../../lib/notesStorage";
 
 type Point = { x: number; y: number };
 type PageBackground = {
@@ -50,8 +46,6 @@ type Stroke = {
   id: string;
   points: Point[];
   d: string;
-  // optional filled polygon path from perfect-freehand
-  pf?: string;
   w: number;
   c: string;
   dx: number;
@@ -75,6 +69,7 @@ const ERASER_MULT = 10;
 
 const MIN_DIST_PX = 2;
 const MIN_POINTS_TO_SAVE = 3;
+const STROKE_SMOOTHING_ALPHA = 0.38;
 
 // Letter page in "page units"
 const PAGE_W = 850; // 8.5 * 100
@@ -141,28 +136,6 @@ function pointsToSmoothPath(points: Point[]) {
   d += `Q ${secondLast.x} ${secondLast.y} ${last.x} ${last.y}`;
 
   return d;
-}
-
-/**
- * Convert a list of `Point` to a filled polygon SVG path using perfect-freehand.
- * Returns an empty string on failure.
- */
-function getPfPath(points: Point[], size: number) {
-  try {
-    if (!points || points.length === 0) return "";
-    const input = points.map((p) => [p.x, p.y]);
-    // generate the variable-width polygon (array of [x,y])
-    const stroke = getStroke(input as any, { size });
-    if (!stroke || stroke.length === 0) return "";
-    let d = `M ${stroke[0][0]} ${stroke[0][1]}`;
-    for (let i = 1; i < stroke.length; i++) {
-      d += ` L ${stroke[i][0]} ${stroke[i][1]}`;
-    }
-    d += " Z";
-    return d;
-  } catch (e) {
-    return "";
-  }
 }
 
 function computeBBox(points: Point[]) {
@@ -256,6 +229,17 @@ function uid() {
 
 function pointAt(a: Point, b: Point, t: number): Point {
   return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+}
+
+function lerpPoint(a: Point, b: Point, t: number): Point {
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+}
+
+function smoothTowards(prev: Point, next: Point, alpha: number): Point {
+  return {
+    x: prev.x + (next.x - prev.x) * alpha,
+    y: prev.y + (next.y - prev.y) * alpha,
+  };
 }
 
 function segmentCircleTs(a: Point, b: Point, center: Point, radius: number) {
@@ -570,7 +554,11 @@ function normalizeDocToPages(rawDoc: any): {
   if (pageBackgrounds.length !== pages.length) {
     pageBackgrounds = pages.map(
       (_, i) =>
-        pageBackgrounds[i] ?? { dataUrl: null, pdfUri: null, pdfPageNumber: null },
+        pageBackgrounds[i] ?? {
+          dataUrl: null,
+          pdfUri: null,
+          pdfPageNumber: null,
+        },
     );
   }
 
@@ -590,7 +578,11 @@ function buildDocFromPages(
   const safePages = pages.length > 0 ? pages : [[]];
   const safeBackgrounds = safePages.map(
     (_, i) =>
-      pageBackgrounds[i] ?? { dataUrl: null, pdfUri: null, pdfPageNumber: null },
+      pageBackgrounds[i] ?? {
+        dataUrl: null,
+        pdfUri: null,
+        pdfPageNumber: null,
+      },
   );
   const clampedIndex = Math.max(
     0,
@@ -609,8 +601,7 @@ function buildDocFromPages(
         : {}),
       ...(safeBackgrounds[i].pdfPageNumber
         ? {
-            backgroundPdfPageNumber:
-              safeBackgrounds[i].pdfPageNumber as number,
+            backgroundPdfPageNumber: safeBackgrounds[i].pdfPageNumber as number,
           }
         : {}),
     })),
@@ -670,6 +661,54 @@ function PageThumbnail({
     </View>
   );
 }
+
+const StrokeLayer = React.memo(
+  function StrokeLayer({
+    strokes,
+    showSelection,
+    selectedSet,
+  }: {
+    strokes: Stroke[];
+    showSelection: boolean;
+    selectedSet: Set<string>;
+  }) {
+    return (
+      <>
+        {strokes.map((s) => {
+          const selected = showSelection && selectedSet.has(s.id);
+          return (
+            <G key={s.id} transform={`translate(${s.dx} ${s.dy})`}>
+              {selected ? (
+                <Path
+                  d={s.d}
+                  stroke="rgba(0,122,255,0.35)"
+                  strokeWidth={s.w + 6}
+                  fill="none"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  vectorEffect="non-scaling-stroke"
+                />
+              ) : null}
+              <Path
+                d={s.d}
+                stroke={s.c}
+                strokeWidth={s.w}
+                fill="none"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                vectorEffect="non-scaling-stroke"
+              />
+            </G>
+          );
+        })}
+      </>
+    );
+  },
+  (prev, next) =>
+    prev.strokes === next.strokes &&
+    prev.showSelection === next.showSelection &&
+    prev.selectedSet === next.selectedSet,
+);
 
 export default function Index() {
   // ---- STEP 3: note routing + persistence
@@ -757,12 +796,17 @@ export default function Index() {
 
   // Strokes + current stroke
   const [strokes, setStrokes] = useState<Stroke[]>([]);
+  const strokesRef = useRef<Stroke[]>([]);
   const [currentPath, setCurrentPath] = useState("");
   const [pages, setPages] = useState<Stroke[][]>([[]]);
   const [pageBackgrounds, setPageBackgrounds] = useState<PageBackground[]>([
     { dataUrl: null, pdfUri: null, pdfPageNumber: null },
   ]);
   const [currentPageIndex, setCurrentPageIndex] = useState(0);
+
+  useEffect(() => {
+    strokesRef.current = strokes;
+  }, [strokes]);
 
   useEffect(() => {
     setPages((prev) => {
@@ -874,7 +918,9 @@ export default function Index() {
   // Eraser cursor (outline)
   const [eraserCursor, setEraserCursor] = useState<Point | null>(null);
   const lastEraserPoint = useRef<Point | null>(null);
-  const eraserSessionStart = useRef<Stroke[] | null>(null);
+  const eraserDidMutate = useRef(false);
+  const queuedEraserPoints = useRef<Point[]>([]);
+  const eraserRafId = useRef<number | null>(null);
 
   // Lasso UI
   const [lassoPath, setLassoPath] = useState("");
@@ -892,9 +938,9 @@ export default function Index() {
   const isMovingSelection = useRef(false);
   const moveStart = useRef<Point | null>(null);
   const moveBase = useRef<Map<string, { dx: number; dy: number }>>(new Map());
-  const moveSessionStart = useRef<Stroke[] | null>(null);
+  const moveDidMutate = useRef(false);
 
-  // rAF throttling (web)
+  // rAF throttling
   const rafId = useRef<number | null>(null);
   const pending = useRef(false);
 
@@ -1147,16 +1193,18 @@ export default function Index() {
   }, []);
 
   const recomputePath = () => {
-    if (Platform.OS === "web") {
-      if (pending.current) return;
-      pending.current = true;
-      rafId.current = requestAnimationFrame(() => {
-        pending.current = false;
-        setCurrentPath(pointsToSmoothPath(currentPoints.current));
-      });
+    if (pending.current) return;
+
+    if (typeof requestAnimationFrame !== "function") {
+      setCurrentPath(pointsToSmoothPath(currentPoints.current));
       return;
     }
-    setCurrentPath(pointsToSmoothPath(currentPoints.current));
+
+    pending.current = true;
+    rafId.current = requestAnimationFrame(() => {
+      pending.current = false;
+      setCurrentPath(pointsToSmoothPath(currentPoints.current));
+    });
   };
 
   const startStroke = (p: Point) => {
@@ -1167,8 +1215,24 @@ export default function Index() {
   const extendStroke = (p: Point) => {
     const pts = currentPoints.current;
     const last = pts[pts.length - 1];
-    if (last && dist(last, p) < MIN_DIST_PX) return;
-    pts.push(p);
+
+    if (!last) {
+      pts.push(p);
+      recomputePath();
+      return;
+    }
+
+    if (dist(last, p) < MIN_DIST_PX) return;
+
+    const smoothed = smoothTowards(last, p, STROKE_SMOOTHING_ALPHA);
+    const segmentLen = dist(last, smoothed);
+    const segmentStep = Math.max(1, MIN_DIST_PX * 0.75);
+    const steps = Math.max(1, Math.ceil(segmentLen / segmentStep));
+
+    for (let i = 1; i <= steps; i++) {
+      pts.push(lerpPoint(last, smoothed, i / steps));
+    }
+
     recomputePath();
   };
 
@@ -1238,12 +1302,41 @@ export default function Index() {
         }
       }
 
+      if (changed) eraserDidMutate.current = true;
       return changed ? out : prev;
     });
   };
 
+  const flushQueuedEraser = () => {
+    if (eraserRafId.current != null) {
+      cancelAnimationFrame(eraserRafId.current);
+      eraserRafId.current = null;
+    }
+
+    if (queuedEraserPoints.current.length === 0) return;
+    const points = queuedEraserPoints.current.slice();
+    queuedEraserPoints.current = [];
+    eraseAtPoints(points);
+  };
+
+  const queueEraserPoints = (points: Point[]) => {
+    if (points.length === 0) return;
+    queuedEraserPoints.current.push(...points);
+
+    if (eraserRafId.current != null) return;
+    if (typeof requestAnimationFrame !== "function") {
+      flushQueuedEraser();
+      return;
+    }
+
+    eraserRafId.current = requestAnimationFrame(() => {
+      eraserRafId.current = null;
+      flushQueuedEraser();
+    });
+  };
+
   const eraseAtPoint = (p: Point) => {
-    eraseAtPoints([p]);
+    queueEraserPoints([p]);
   };
 
   // Make eraser continuous between pointer events (precision without jagginess)
@@ -1266,7 +1359,7 @@ export default function Index() {
         y: from.y + (to.y - from.y) * t,
       });
     }
-    eraseAtPoints(samples);
+    queueEraserPoints(samples);
   };
 
   const lassoToPath = (pts: Point[]) => {
@@ -1331,7 +1424,7 @@ export default function Index() {
     if (selectedIds.length === 0) return;
     isMovingSelection.current = true;
     moveStart.current = p;
-    moveSessionStart.current = strokes.map((s) => ({ ...s }));
+    moveDidMutate.current = false;
     const base = new Map<string, { dx: number; dy: number }>();
     for (const s of strokes) {
       if (selectedSet.has(s.id)) base.set(s.id, { dx: s.dx, dy: s.dy });
@@ -1343,6 +1436,8 @@ export default function Index() {
     if (!isMovingSelection.current || !moveStart.current) return;
     const dx = p.x - moveStart.current.x;
     const dy = p.y - moveStart.current.y;
+    if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01)
+      moveDidMutate.current = true;
 
     setStrokes((prev) =>
       prev.map((s) => {
@@ -1355,18 +1450,13 @@ export default function Index() {
   };
 
   const endMoveSelection = () => {
-    if (isMovingSelection.current && moveSessionStart.current) {
-      setStrokes((prev) => {
-        if (JSON.stringify(prev) !== JSON.stringify(moveSessionStart.current)) {
-          pushHistory(prev);
-        }
-        return prev;
-      });
+    if (isMovingSelection.current && moveDidMutate.current) {
+      pushHistory(strokesRef.current);
     }
     isMovingSelection.current = false;
     moveStart.current = null;
     moveBase.current = new Map();
-    moveSessionStart.current = null;
+    moveDidMutate.current = false;
   };
 
   const deleteSelection = () => {
@@ -1382,16 +1472,18 @@ export default function Index() {
   const resetForPageSwitch = () => {
     isPointerDown.current = false;
     cancelStroke();
+    flushQueuedEraser();
     setSelectedIds([]);
     setLassoPath("");
     lassoPoints.current = [];
     setEraserCursor(null);
     lastEraserPoint.current = null;
-    eraserSessionStart.current = null;
+    eraserDidMutate.current = false;
+    queuedEraserPoints.current = [];
     isMovingSelection.current = false;
     moveStart.current = null;
     moveBase.current = new Map();
-    moveSessionStart.current = null;
+    moveDidMutate.current = false;
   };
 
   const selectPage = (index: number) => {
@@ -1410,7 +1502,11 @@ export default function Index() {
     const safePages = pages.length > 0 ? pages : [[]];
     const safeBackgrounds = safePages.map(
       (_, i) =>
-        pageBackgrounds[i] ?? { dataUrl: null, pdfUri: null, pdfPageNumber: null },
+        pageBackgrounds[i] ?? {
+          dataUrl: null,
+          pdfUri: null,
+          pdfPageNumber: null,
+        },
     );
     const insertAt = Math.max(
       0,
@@ -1440,7 +1536,11 @@ export default function Index() {
     const safePages = pages.length > 0 ? pages : [[]];
     const safeBackgrounds = safePages.map(
       (_, i) =>
-        pageBackgrounds[i] ?? { dataUrl: null, pdfUri: null, pdfPageNumber: null },
+        pageBackgrounds[i] ?? {
+          dataUrl: null,
+          pdfUri: null,
+          pdfPageNumber: null,
+        },
     );
 
     if (safePages.length <= 1) {
@@ -1479,7 +1579,11 @@ export default function Index() {
     const safePages = pages.length > 0 ? pages : [[]];
     const safeBackgrounds = safePages.map(
       (_, i) =>
-        pageBackgrounds[i] ?? { dataUrl: null, pdfUri: null, pdfPageNumber: null },
+        pageBackgrounds[i] ?? {
+          dataUrl: null,
+          pdfUri: null,
+          pdfPageNumber: null,
+        },
     );
     const to = from + delta;
     if (from < 0 || from >= safePages.length) return;
@@ -1490,11 +1594,15 @@ export default function Index() {
     const [moved] = nextPages.splice(from, 1);
     const [movedBg] = nextBackgrounds.splice(from, 1);
     nextPages.splice(to, 0, moved);
-    nextBackgrounds.splice(to, 0, movedBg ?? {
-      dataUrl: null,
-      pdfUri: null,
-      pdfPageNumber: null,
-    });
+    nextBackgrounds.splice(
+      to,
+      0,
+      movedBg ?? {
+        dataUrl: null,
+        pdfUri: null,
+        pdfPageNumber: null,
+      },
+    );
 
     let nextCurrentIndex = currentPageIndex;
     if (currentPageIndex === from) nextCurrentIndex = to;
@@ -1634,7 +1742,7 @@ export default function Index() {
 
           if (tool === "eraser") {
             setEraserCursor(p);
-            eraserSessionStart.current = strokes.map((s) => ({ ...s }));
+            eraserDidMutate.current = false;
             lastEraserPoint.current = p;
             eraseAtPoint(p);
             return;
@@ -1676,16 +1784,11 @@ export default function Index() {
           pointerPageIndex.current = null;
 
           if (tool === "eraser") {
-            if (
-              eraserSessionStart.current &&
-              JSON.stringify(strokes) !==
-                JSON.stringify(eraserSessionStart.current)
-            ) {
-              pushHistory(strokes);
-            }
+            flushQueuedEraser();
+            if (eraserDidMutate.current) pushHistory(strokesRef.current);
             setEraserCursor(null);
             lastEraserPoint.current = null;
-            eraserSessionStart.current = null;
+            eraserDidMutate.current = false;
             return;
           }
 
@@ -1702,8 +1805,10 @@ export default function Index() {
           if (pointerPageIndex.current !== pageIndex) return;
           isPointerDown.current = false;
           pointerPageIndex.current = null;
+          flushQueuedEraser();
           setEraserCursor(null);
           lastEraserPoint.current = null;
+          eraserDidMutate.current = false;
           endMoveSelection();
           setLassoPath("");
           lassoPoints.current = [];
@@ -1733,6 +1838,7 @@ export default function Index() {
 
         if (tool === "eraser") {
           setEraserCursor(p);
+          eraserDidMutate.current = false;
           lastEraserPoint.current = p;
           eraseAtPoint(p);
           return;
@@ -1772,8 +1878,11 @@ export default function Index() {
         pointerPageIndex.current = null;
 
         if (tool === "eraser") {
+          flushQueuedEraser();
+          if (eraserDidMutate.current) pushHistory(strokesRef.current);
           setEraserCursor(null);
           lastEraserPoint.current = null;
+          eraserDidMutate.current = false;
           return;
         }
 
@@ -1790,6 +1899,8 @@ export default function Index() {
         if (pointerPageIndex.current !== pageIndex) return;
         isPointerDown.current = false;
         pointerPageIndex.current = null;
+        flushQueuedEraser();
+        if (tool === "eraser") eraserDidMutate.current = false;
         cancelStroke();
       },
     };
@@ -2226,33 +2337,11 @@ export default function Index() {
                     pointerEvents="none"
                     style={{ position: "absolute", left: 0, top: 0, zIndex: 2 }}
                   >
-                    {renderStrokes.map((s) => {
-                      const selected = pageIsActive && selectedSet.has(s.id);
-                      return (
-                        <G key={s.id} transform={`translate(${s.dx} ${s.dy})`}>
-                          {selected ? (
-                            <Path
-                              d={s.d}
-                              stroke="rgba(0,122,255,0.35)"
-                              strokeWidth={s.w + 6}
-                              fill="none"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              vectorEffect="non-scaling-stroke"
-                            />
-                          ) : null}
-                          <Path
-                            d={s.d}
-                            stroke={s.c}
-                            strokeWidth={s.w}
-                            fill="none"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            vectorEffect="non-scaling-stroke"
-                          />
-                        </G>
-                      );
-                    })}
+                    <StrokeLayer
+                      strokes={renderStrokes}
+                      showSelection={pageIsActive}
+                      selectedSet={selectedSet}
+                    />
 
                     {pageIsActive && currentPath ? (
                       <Path

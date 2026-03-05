@@ -1,6 +1,6 @@
-import { useFocusEffect, useRouter } from "expo-router";
 import * as DocumentPicker from "expo-document-picker";
-import * as FileSystem from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy";
+import { useFocusEffect, useRouter } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Modal,
@@ -754,7 +754,7 @@ export default function Explore() {
                     {createBusy ? "Importing..." : "Choose PDF"}
                   </Text>
                 </Pressable>
-                  <Text style={{ color: TEXT_MUTED, fontSize: 12 }}>
+                <Text style={{ color: TEXT_MUTED, fontSize: 12 }}>
                   {createPdfName
                     ? `${createPdfName} (${createPdfPageCount} page(s) ready)`
                     : "No PDF selected"}
@@ -762,7 +762,9 @@ export default function Explore() {
               </View>
             ) : null}
 
-            <Text style={{ color: TEXT_MUTED, fontWeight: "800", marginTop: 4 }}>
+            <Text
+              style={{ color: TEXT_MUTED, fontWeight: "800", marginTop: 4 }}
+            >
               Cover color
             </Text>
 
@@ -792,7 +794,9 @@ export default function Explore() {
             </View>
 
             {createError ? (
-              <Text style={{ color: "#b42318", fontWeight: "700", fontSize: 12 }}>
+              <Text
+                style={{ color: "#b42318", fontWeight: "700", fontSize: 12 }}
+              >
                 {createError}
               </Text>
             ) : null}
