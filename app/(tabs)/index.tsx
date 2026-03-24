@@ -1,68 +1,36 @@
-import Slider from "@react-native-community/slider";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { ChevronLeft } from "lucide-react-native";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+
+import { FloatingToolbar } from "@/components/editor/FloatingToolbar";
+import { PageCanvas } from "@/components/editor/PageCanvas";
+import { ColorModal } from "@/components/editor/modals/ColorModal";
+import { PagesModal } from "@/components/editor/modals/PagesModal";
+import { SizeModal } from "@/components/editor/modals/SizeModal";
+import { ToolbarLayoutModal } from "@/components/editor/modals/ToolbarLayoutModal";
+import { useEditorPageState } from "@/hooks/useEditorPageState";
+import { useNotePersistence } from "@/hooks/useNotePersistence";
+import { exportNoteAsPdf } from "@/lib/editorExport";
 import {
-  ChevronLeft,
-  Eraser,
-  LassoSelect,
-  MoreVertical,
-  Palette,
-  PenLine,
-  RotateCcw,
-  RotateCw,
-  Trash2,
-} from "lucide-react-native";
-import React, { useEffect, useMemo, useRef, useState } from "react";
-
-import {
-  Image,
-  Modal,
-  PanResponder,
-  Platform,
-  Pressable,
-  ScrollView,
-  Text,
-  View,
-} from "react-native";
-import Svg, {
-  Circle,
-  Defs,
-  G,
-  LinearGradient,
-  Path,
-  Rect,
-  Stop,
-} from "react-native-svg";
-import PdfPageBackground from "../../components/PdfPageBackground";
-import { createNote, loadNote, saveNote } from "../../lib/notesStorage";
-
-type Point = { x: number; y: number };
-type PageBackground = {
-  dataUrl: string | null;
-  pdfUri: string | null;
-  pdfPageNumber: number | null;
-};
-
-type Stroke = {
-  id: string;
-  points: Point[];
-  d: string;
-  w: number;
-  c: string;
-  dx: number;
-  dy: number;
-  bbox: { minX: number; minY: number; maxX: number; maxY: number };
-};
+  EMPTY_PAGE_BACKGROUND,
+  PAGE_H,
+  PAGE_W,
+  type Point,
+  type Stroke,
+} from "@/lib/editorTypes";
+import { PanResponder, Platform, Pressable, Text, View } from "react-native";
 
 // Theme
 const WORKSPACE_BG = "#ECEDEF";
-const TOPBAR_BG = "rgba(255,255,255,0.92)";
 const TOPBAR_BORDER = "rgba(22,26,33,0.12)";
-const BTN_BG = "rgba(20,26,34,0.05)";
-const BTN_BG_ACTIVE = "#FFFFFF";
-const BTN_BORDER = "rgba(20,26,34,0.16)";
 
 const PAGE_BG = "#ffffff";
-const PAGE_BORDER = "rgba(20,26,34,0.18)";
 const TOOLBAR_MIN_TOP = 72;
 
 const ERASER_MULT = 10;
@@ -71,11 +39,7 @@ const MIN_DIST_PX = 2;
 const MIN_POINTS_TO_SAVE = 3;
 const STROKE_SMOOTHING_ALPHA = 0.38;
 
-// Letter page in "page units"
-const PAGE_W = 850; // 8.5 * 100
-const PAGE_H = 1100; // 11 * 100
-
-const SIZE_OPTIONS: Array<{ label: string; width: number }> = [
+const SIZE_OPTIONS: { label: string; width: number }[] = [
   { label: "1", width: 3 },
   { label: "2", width: 4 },
   { label: "3", width: 5 },
@@ -151,45 +115,6 @@ function computeBBox(points: Point[]) {
   }
   if (!isFinite(minX)) minX = minY = maxX = maxY = 0;
   return { minX, minY, maxX, maxY };
-}
-
-function colorFromHue(h: number) {
-  return `hsl(${Math.round(h)}, 100%, 50%)`;
-}
-
-function escapeHtml(input: string) {
-  return input
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-function HueBar({ width, height }: { width: number; height: number }) {
-  return (
-    <Svg width={width} height={height}>
-      <Defs>
-        <LinearGradient id="hue" x1="0" y1="0" x2="1" y2="0">
-          <Stop offset="0%" stopColor="#ff0000" />
-          <Stop offset="16.6%" stopColor="#ffff00" />
-          <Stop offset="33.3%" stopColor="#00ff00" />
-          <Stop offset="50%" stopColor="#00ffff" />
-          <Stop offset="66.6%" stopColor="#0000ff" />
-          <Stop offset="83.3%" stopColor="#ff00ff" />
-          <Stop offset="100%" stopColor="#ff0000" />
-        </LinearGradient>
-      </Defs>
-      <Rect
-        x="0"
-        y="0"
-        width={width}
-        height={height}
-        rx={height / 2}
-        fill="url(#hue)"
-      />
-    </Svg>
-  );
 }
 
 /** Point in polygon (ray casting). */
@@ -312,7 +237,7 @@ function splitStrokeByEraserCircle(s: Stroke, center: Point, radius: number) {
     const roots = segmentCircleTs(a, b, center, radius);
     const cuts = [0, ...roots, 1];
 
-    const outsideIntervals: Array<{ t0: number; t1: number }> = [];
+    const outsideIntervals: { t0: number; t1: number }[] = [];
     for (let j = 0; j < cuts.length - 1; j++) {
       const t0 = cuts[j];
       const t1 = cuts[j + 1];
@@ -428,46 +353,6 @@ function splitStrokeByEraserPathPoints(
   return changed ? parts : null;
 }
 
-// Small icon-only button
-function IconButton({
-  onPress,
-  disabled,
-  active,
-  children,
-  bgOverride,
-  borderOverride,
-}: {
-  onPress: () => void;
-  disabled?: boolean;
-  active?: boolean;
-  children: React.ReactNode;
-  bgOverride?: string;
-  borderOverride?: string;
-}) {
-  const bg = bgOverride ?? (active ? BTN_BG_ACTIVE : BTN_BG);
-  const border = borderOverride ?? BTN_BORDER;
-
-  return (
-    <Pressable
-      onPress={onPress}
-      disabled={disabled}
-      style={{
-        width: 46,
-        height: 46,
-        borderRadius: 14,
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: bg,
-        borderWidth: 1,
-        borderColor: border,
-        opacity: disabled ? 0.5 : 1,
-      }}
-    >
-      {children}
-    </Pressable>
-  );
-}
-
 function clamp(n: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, n));
 }
@@ -478,260 +363,13 @@ function normalizeNoteId(x: unknown): string | null {
   return null;
 }
 
-function sanitizeStroke(raw: any): Stroke | null {
-  if (!raw) return null;
-  const points = Array.isArray(raw.points) ? raw.points : [];
-  if (points.length < 1) return null;
-
-  const safePoints: Point[] = points
-    .map((p: any) => ({ x: Number(p?.x), y: Number(p?.y) }))
-    .filter((p: Point) => Number.isFinite(p.x) && Number.isFinite(p.y));
-
-  if (safePoints.length < 1) return null;
-
-  const d =
-    typeof raw.d === "string" && raw.d.trim().length > 0
-      ? raw.d
-      : pointsToSmoothPath(safePoints);
-
-  const bbox =
-    raw.bbox &&
-    Number.isFinite(raw.bbox.minX) &&
-    Number.isFinite(raw.bbox.minY) &&
-    Number.isFinite(raw.bbox.maxX) &&
-    Number.isFinite(raw.bbox.maxY)
-      ? raw.bbox
-      : computeBBox(safePoints);
-
-  return {
-    id: typeof raw.id === "string" && raw.id ? raw.id : uid(),
-    points: safePoints,
-    d,
-    w: Number.isFinite(raw.w) ? raw.w : 4,
-    c: typeof raw.c === "string" ? raw.c : "#111111",
-    dx: Number.isFinite(raw.dx) ? raw.dx : 0,
-    dy: Number.isFinite(raw.dy) ? raw.dy : 0,
-    bbox,
-  };
-}
-
-function normalizeDocToPages(rawDoc: any): {
-  pages: Stroke[][];
-  pageBackgrounds: PageBackground[];
-  currentPageIndex: number;
-} {
-  const rawPages = Array.isArray(rawDoc?.pages) ? rawDoc.pages : null;
-
-  let pages: Stroke[][] = [];
-  let pageBackgrounds: PageBackground[] = [];
-  if (rawPages && rawPages.length > 0) {
-    pages = rawPages.map(
-      (pg: any) =>
-        (Array.isArray(pg?.strokes) ? pg.strokes : [])
-          .map(sanitizeStroke)
-          .filter(Boolean) as Stroke[],
-    );
-    pageBackgrounds = rawPages.map((pg: any) => ({
-      dataUrl:
-        typeof pg?.backgroundDataUrl === "string" ? pg.backgroundDataUrl : null,
-      pdfUri:
-        typeof pg?.backgroundPdfUri === "string" ? pg.backgroundPdfUri : null,
-      pdfPageNumber: Number.isFinite(pg?.backgroundPdfPageNumber)
-        ? Math.max(1, Math.trunc(pg.backgroundPdfPageNumber))
-        : null,
-    }));
-  } else {
-    const rawStrokes =
-      (rawDoc && Array.isArray(rawDoc.strokes) && rawDoc.strokes) || [];
-    pages = [rawStrokes.map(sanitizeStroke).filter(Boolean) as Stroke[]];
-    pageBackgrounds = [{ dataUrl: null, pdfUri: null, pdfPageNumber: null }];
-  }
-
-  if (pages.length === 0) {
-    pages = [[]];
-    pageBackgrounds = [{ dataUrl: null, pdfUri: null, pdfPageNumber: null }];
-  }
-  if (pageBackgrounds.length !== pages.length) {
-    pageBackgrounds = pages.map(
-      (_, i) =>
-        pageBackgrounds[i] ?? {
-          dataUrl: null,
-          pdfUri: null,
-          pdfPageNumber: null,
-        },
-    );
-  }
-
-  const rawIndex = Number(rawDoc?.currentPageIndex);
-  const currentPageIndex = Number.isFinite(rawIndex)
-    ? Math.max(0, Math.min(pages.length - 1, Math.trunc(rawIndex)))
-    : 0;
-
-  return { pages, pageBackgrounds, currentPageIndex };
-}
-
-function buildDocFromPages(
-  pages: Stroke[][],
-  pageBackgrounds: PageBackground[],
-  currentPageIndex: number,
-) {
-  const safePages = pages.length > 0 ? pages : [[]];
-  const safeBackgrounds = safePages.map(
-    (_, i) =>
-      pageBackgrounds[i] ?? {
-        dataUrl: null,
-        pdfUri: null,
-        pdfPageNumber: null,
-      },
-  );
-  const clampedIndex = Math.max(
-    0,
-    Math.min(safePages.length - 1, currentPageIndex),
-  );
-  return {
-    strokes: safePages[clampedIndex] ?? [],
-    pages: safePages.map((p, i) => ({
-      id: `page-${i + 1}`,
-      strokes: p,
-      ...(safeBackgrounds[i].dataUrl
-        ? { backgroundDataUrl: safeBackgrounds[i].dataUrl as string }
-        : {}),
-      ...(safeBackgrounds[i].pdfUri
-        ? { backgroundPdfUri: safeBackgrounds[i].pdfUri as string }
-        : {}),
-      ...(safeBackgrounds[i].pdfPageNumber
-        ? {
-            backgroundPdfPageNumber: safeBackgrounds[i].pdfPageNumber as number,
-          }
-        : {}),
-    })),
-    currentPageIndex: clampedIndex,
-  };
-}
-
-function PageThumbnail({
-  strokes,
-  selected,
-  label,
-}: {
-  strokes: Stroke[];
-  selected: boolean;
-  label: string;
-}) {
-  const TW = 92;
-  const TH = Math.round((PAGE_H / PAGE_W) * TW);
-  const scale = TW / PAGE_W;
-
-  return (
-    <View style={{ alignItems: "center", gap: 6 }}>
-      <View
-        style={{
-          width: TW + 8,
-          height: TH + 8,
-          borderRadius: 10,
-          alignItems: "center",
-          justifyContent: "center",
-          borderWidth: 1,
-          borderColor: selected ? "#fff" : "rgba(255,255,255,0.20)",
-          backgroundColor: selected
-            ? "rgba(255,255,255,0.14)"
-            : "rgba(255,255,255,0.06)",
-        }}
-      >
-        <Svg width={TW} height={TH}>
-          <Rect x={0} y={0} width={TW} height={TH} rx={7} fill="#fff" />
-          <G transform={`scale(${scale})`}>
-            {strokes.map((s) => (
-              <G key={s.id} transform={`translate(${s.dx} ${s.dy})`}>
-                <Path d={s.d} stroke={s.c} strokeWidth={s.w} fill="none" />
-              </G>
-            ))}
-          </G>
-        </Svg>
-      </View>
-      <Text
-        style={{
-          color: selected ? "#fff" : "rgba(255,255,255,0.80)",
-          fontSize: 11,
-          fontWeight: "800",
-        }}
-      >
-        {label}
-      </Text>
-    </View>
-  );
-}
-
-const StrokeLayer = React.memo(
-  function StrokeLayer({
-    strokes,
-    showSelection,
-    selectedSet,
-  }: {
-    strokes: Stroke[];
-    showSelection: boolean;
-    selectedSet: Set<string>;
-  }) {
-    return (
-      <>
-        {strokes.map((s) => {
-          const selected = showSelection && selectedSet.has(s.id);
-          return (
-            <G key={s.id} transform={`translate(${s.dx} ${s.dy})`}>
-              {selected ? (
-                <Path
-                  d={s.d}
-                  stroke="rgba(0,122,255,0.35)"
-                  strokeWidth={s.w + 6}
-                  fill="none"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  vectorEffect="non-scaling-stroke"
-                />
-              ) : null}
-              <Path
-                d={s.d}
-                stroke={s.c}
-                strokeWidth={s.w}
-                fill="none"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                vectorEffect="non-scaling-stroke"
-              />
-            </G>
-          );
-        })}
-      </>
-    );
-  },
-  (prev, next) =>
-    prev.strokes === next.strokes &&
-    prev.showSelection === next.showSelection &&
-    prev.selectedSet === next.selectedSet,
-);
-
 export default function Index() {
-  // ---- STEP 3: note routing + persistence
-  // ---- STEP 3: note routing + persistence
   const router = useRouter();
   const params = useLocalSearchParams();
   const routeNoteId = normalizeNoteId((params as any)?.noteId);
 
-  const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
-
-  // Prevent autosave while we are loading a note
-  const [hydrating, setHydrating] = useState(false);
-
-  // Debounced autosave timer
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   // Tool
   const [tool, setTool] = useState<"pen" | "eraser" | "lasso">("pen");
-
-  // Keep activeNoteId synced with the route param
-  useEffect(() => {
-    if (routeNoteId) setActiveNoteId(routeNoteId);
-  }, [routeNoteId]);
 
   // Toolbar drag + orientation
   const [toolbarOrientation, setToolbarOrientation] = useState<
@@ -795,125 +433,31 @@ export default function Index() {
   const clampZoom = (z: number) => Math.max(0.5, Math.min(2.5, z));
 
   // Strokes + current stroke
-  const [strokes, setStrokes] = useState<Stroke[]>([]);
-  const strokesRef = useRef<Stroke[]>([]);
   const [currentPath, setCurrentPath] = useState("");
-  const [pages, setPages] = useState<Stroke[][]>([[]]);
-  const [pageBackgrounds, setPageBackgrounds] = useState<PageBackground[]>([
-    { dataUrl: null, pdfUri: null, pdfPageNumber: null },
-  ]);
-  const [currentPageIndex, setCurrentPageIndex] = useState(0);
-
-  useEffect(() => {
-    strokesRef.current = strokes;
-  }, [strokes]);
-
-  useEffect(() => {
-    setPages((prev) => {
-      const base = prev.length > 0 ? prev : [[]];
-      const idx = Math.max(0, Math.min(currentPageIndex, base.length - 1));
-      if (base[idx] === strokes) return base;
-      const next = base.slice();
-      next[idx] = strokes;
-      return next;
-    });
-  }, [strokes, currentPageIndex]);
-
-  // Undo/Redo history
-  const [history, setHistory] = useState<Stroke[][]>([[]]);
-  const [historyIndex, setHistoryIndex] = useState(0);
-
-  const pushHistory = (newStrokes: Stroke[]) => {
-    const newIndex = historyIndex + 1;
-    setHistory((prev) => [...prev.slice(0, newIndex), newStrokes]);
-    setHistoryIndex(newIndex);
-  };
-
-  const undo = () => {
-    if (historyIndex > 0) {
-      const newIndex = historyIndex - 1;
-      setHistoryIndex(newIndex);
-      setStrokes(history[newIndex]);
-    }
-  };
-
-  const redo = () => {
-    if (historyIndex < history.length - 1) {
-      const newIndex = historyIndex + 1;
-      setHistoryIndex(newIndex);
-      setStrokes(history[newIndex]);
-    }
-  };
-
-  // --- Load strokes when we open/switch notes
-  useEffect(() => {
-    let cancelled = false;
-
-    async function run() {
-      if (!activeNoteId) return;
-
-      setHydrating(true);
-
-      try {
-        const data = await loadNote(activeNoteId);
-        if (cancelled) return;
-
-        const normalized = normalizeDocToPages(data?.doc);
-        const loadedStrokes =
-          normalized.pages[normalized.currentPageIndex] ?? [];
-        setPages(normalized.pages);
-        setPageBackgrounds(normalized.pageBackgrounds);
-        setCurrentPageIndex(normalized.currentPageIndex);
-        setStrokes(loadedStrokes);
-        setHistory([loadedStrokes]);
-        setHistoryIndex(0);
-
-        // Reset transient UI state when switching notes
-        setSelectedIds([]);
-        setLassoPath("");
-        lassoPoints.current = [];
-        setCurrentPath("");
-        currentPoints.current = [];
-        setEraserCursor(null);
-        lastEraserPoint.current = null;
-        isPointerDown.current = false;
-      } finally {
-        if (!cancelled) setHydrating(false);
-      }
-    }
-
-    run();
-    return () => {
-      cancelled = true;
-    };
-  }, [activeNoteId]);
-
-  // --- Autosave strokes (debounced)
-  useEffect(() => {
-    if (!activeNoteId) return;
-    if (hydrating) return;
-
-    // Optional: avoid saving mid-stroke
-    if (isPointerDown.current) return;
-
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-
-    saveTimerRef.current = setTimeout(() => {
-      const doc = buildDocFromPages(pages, pageBackgrounds, currentPageIndex);
-      saveNote(activeNoteId, { doc }).catch(() => {});
-    }, 450);
-
-    return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    };
-  }, [
-    activeNoteId,
+  const {
     strokes,
-    hydrating,
+    setStrokes,
+    strokesRef,
     pages,
+    setPages,
     pageBackgrounds,
+    setPageBackgrounds,
     currentPageIndex,
-  ]);
+    setCurrentPageIndex,
+    history,
+    setHistory,
+    historyIndex,
+    setHistoryIndex,
+    pushHistory,
+    undo,
+    redo,
+    selectPage,
+    addPageBelowCurrent,
+    removeCurrentPage,
+    movePage,
+  } = useEditorPageState({
+    emptyBackground: EMPTY_PAGE_BACKGROUND,
+  });
 
   // Eraser cursor (outline)
   const [eraserCursor, setEraserCursor] = useState<Point | null>(null);
@@ -1006,122 +550,37 @@ export default function Index() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [containerSize.w, containerSize.h, toolbarSize.w, toolbarSize.h]);
 
-  // ---- STEP 3: load note when noteId changes (and auto-create if missing)
-  useEffect(() => {
-    let cancelled = false;
+  const resetCanvasState = useCallback(() => {
+    isPointerDown.current = false;
+    currentPoints.current = [];
+    setCurrentPath("");
+    setSelectedIds([]);
+    setLassoPath("");
+    lassoPoints.current = [];
+    setEraserCursor(null);
+    lastEraserPoint.current = null;
+    isMovingSelection.current = false;
+    moveStart.current = null;
+    moveBase.current = new Map();
+  }, []);
 
-    const resetCanvasState = () => {
-      // stop any in-flight draw
-      isPointerDown.current = false;
-      currentPoints.current = [];
-      setCurrentPath("");
-
-      // clear selection/lasso/eraser preview
-      setSelectedIds([]);
-      setLassoPath("");
-      lassoPoints.current = [];
-      setEraserCursor(null);
-      lastEraserPoint.current = null;
-      isMovingSelection.current = false;
-      moveStart.current = null;
-      moveBase.current = new Map();
-    };
-
-    const run = async () => {
-      // If no noteId in route, create one and replace route
-      if (!routeNoteId) {
-        try {
-          const newId = await createNote("No name");
-          if (cancelled) return;
-          router.replace({
-            pathname: "/(tabs)",
-            params: { noteId: newId },
-          });
-        } catch {
-          // If create fails, just stay
-        }
-        return;
-      }
-
-      // flush any pending save from previous note
-      if (saveTimerRef.current) {
-        clearTimeout(saveTimerRef.current);
-        saveTimerRef.current = null;
-      }
-
-      setActiveNoteId(routeNoteId);
-      setHydrating(true);
-
-      // Clear immediately so you don't see previous note while loading
-      resetCanvasState();
-      setStrokes([]);
-
-      try {
-        const data: any = await loadNote(routeNoteId);
-        if (cancelled) return;
-
-        const normalized = normalizeDocToPages(data?.doc);
-        const pageStrokes = normalized.pages[normalized.currentPageIndex] ?? [];
-        setPages(normalized.pages);
-        setPageBackgrounds(normalized.pageBackgrounds);
-        setCurrentPageIndex(normalized.currentPageIndex);
-        setStrokes(pageStrokes);
-        setHistory([pageStrokes]);
-        setHistoryIndex(0);
-      } catch {
-        // If load fails, keep it empty
-        if (!cancelled) {
-          setPages([[]]);
-          setPageBackgrounds([
-            { dataUrl: null, pdfUri: null, pdfPageNumber: null },
-          ]);
-          setCurrentPageIndex(0);
-          setStrokes([]);
-          setHistory([[]]);
-          setHistoryIndex(0);
-        }
-      } finally {
-        setHydrating(false);
-      }
-    };
-
-    run();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [routeNoteId, router]);
-
-  // ---- STEP 3: autosave strokes (debounced)
-  useEffect(() => {
-    if (!activeNoteId) return;
-    if (hydrating) return;
-
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-
-    saveTimerRef.current = setTimeout(() => {
-      // Don’t save if we’re mid-stroke (optional)
-      // If you want to save mid-stroke too, remove this guard.
-      if (hydrating) return;
-
-      const doc = buildDocFromPages(pages, pageBackgrounds, currentPageIndex);
-      saveNote(activeNoteId, { doc }).catch(() => {});
-    }, 450);
-
-    return () => {
-      if (saveTimerRef.current) {
-        clearTimeout(saveTimerRef.current);
-        saveTimerRef.current = null;
-      }
-    };
-  }, [
-    strokes,
-    activeNoteId,
-    hydrating,
+  useNotePersistence({
+    routeNoteId,
+    router,
+    isPointerDownRef: isPointerDown,
     pages,
     pageBackgrounds,
     currentPageIndex,
-  ]);
+    strokes,
+    emptyBackground: EMPTY_PAGE_BACKGROUND,
+    resetCanvasState,
+    setPages,
+    setPageBackgrounds,
+    setCurrentPageIndex,
+    setStrokes,
+    setHistory,
+    setHistoryIndex,
+  });
 
   const getLocalPagePoint = (e: any): Point | null => {
     const ne = e?.nativeEvent ?? {};
@@ -1486,441 +945,233 @@ export default function Index() {
     moveDidMutate.current = false;
   };
 
-  const selectPage = (index: number) => {
-    const safePages = pages.length > 0 ? pages : [[]];
-    const nextIndex = Math.max(0, Math.min(safePages.length - 1, index));
-    const nextStrokes = safePages[nextIndex] ?? [];
-
-    resetForPageSwitch();
-    setCurrentPageIndex(nextIndex);
-    setStrokes(nextStrokes);
-    setHistory([nextStrokes]);
-    setHistoryIndex(0);
+  const handleSelectPage = (index: number) => {
+    selectPage(index, resetForPageSwitch);
   };
 
-  const addPageBelowCurrent = () => {
-    const safePages = pages.length > 0 ? pages : [[]];
-    const safeBackgrounds = safePages.map(
-      (_, i) =>
-        pageBackgrounds[i] ?? {
-          dataUrl: null,
-          pdfUri: null,
-          pdfPageNumber: null,
-        },
-    );
-    const insertAt = Math.max(
-      0,
-      Math.min(safePages.length, currentPageIndex + 1),
-    );
-    const nextPages = [
-      ...safePages.slice(0, insertAt),
-      [],
-      ...safePages.slice(insertAt),
-    ];
-    const nextBackgrounds = [
-      ...safeBackgrounds.slice(0, insertAt),
-      { dataUrl: null, pdfUri: null, pdfPageNumber: null },
-      ...safeBackgrounds.slice(insertAt),
-    ];
-
-    resetForPageSwitch();
-    setPages(nextPages);
-    setPageBackgrounds(nextBackgrounds);
-    setCurrentPageIndex(insertAt);
-    setStrokes([]);
-    setHistory([[]]);
-    setHistoryIndex(0);
+  const handleAddPageBelowCurrent = () => {
+    addPageBelowCurrent(resetForPageSwitch);
   };
 
-  const removeCurrentPage = () => {
-    const safePages = pages.length > 0 ? pages : [[]];
-    const safeBackgrounds = safePages.map(
-      (_, i) =>
-        pageBackgrounds[i] ?? {
-          dataUrl: null,
-          pdfUri: null,
-          pdfPageNumber: null,
-        },
-    );
-
-    if (safePages.length <= 1) {
-      resetForPageSwitch();
-      setPages([[]]);
-      setPageBackgrounds([
-        { dataUrl: null, pdfUri: null, pdfPageNumber: null },
-      ]);
-      setCurrentPageIndex(0);
-      setStrokes([]);
-      setHistory([[]]);
-      setHistoryIndex(0);
-      return;
-    }
-
-    const nextPages = safePages.filter((_, i) => i !== currentPageIndex);
-    const nextBackgrounds = safeBackgrounds.filter(
-      (_, i) => i !== currentPageIndex,
-    );
-    const nextIndex = Math.max(
-      0,
-      Math.min(nextPages.length - 1, currentPageIndex),
-    );
-    const nextStrokes = nextPages[nextIndex] ?? [];
-
-    resetForPageSwitch();
-    setPages(nextPages);
-    setPageBackgrounds(nextBackgrounds);
-    setCurrentPageIndex(nextIndex);
-    setStrokes(nextStrokes);
-    setHistory([nextStrokes]);
-    setHistoryIndex(0);
-  };
-
-  const movePage = (from: number, delta: -1 | 1) => {
-    const safePages = pages.length > 0 ? pages : [[]];
-    const safeBackgrounds = safePages.map(
-      (_, i) =>
-        pageBackgrounds[i] ?? {
-          dataUrl: null,
-          pdfUri: null,
-          pdfPageNumber: null,
-        },
-    );
-    const to = from + delta;
-    if (from < 0 || from >= safePages.length) return;
-    if (to < 0 || to >= safePages.length) return;
-
-    const nextPages = safePages.slice();
-    const nextBackgrounds = safeBackgrounds.slice();
-    const [moved] = nextPages.splice(from, 1);
-    const [movedBg] = nextBackgrounds.splice(from, 1);
-    nextPages.splice(to, 0, moved);
-    nextBackgrounds.splice(
-      to,
-      0,
-      movedBg ?? {
-        dataUrl: null,
-        pdfUri: null,
-        pdfPageNumber: null,
-      },
-    );
-
-    let nextCurrentIndex = currentPageIndex;
-    if (currentPageIndex === from) nextCurrentIndex = to;
-    else if (from < currentPageIndex && to >= currentPageIndex)
-      nextCurrentIndex = currentPageIndex - 1;
-    else if (from > currentPageIndex && to <= currentPageIndex)
-      nextCurrentIndex = currentPageIndex + 1;
-
-    setPages(nextPages);
-    setPageBackgrounds(nextBackgrounds);
-    setCurrentPageIndex(nextCurrentIndex);
+  const handleRemoveCurrentPage = () => {
+    removeCurrentPage(resetForPageSwitch);
   };
 
   const exportAsPdf = () => {
-    const snapshotPages =
-      pages.length > 0 ? pages.map((p) => p.slice()) : [[] as Stroke[]];
-    const snapshotBackgrounds =
-      snapshotPages.length > 0
-        ? snapshotPages.map(
-            (_, i) =>
-              pageBackgrounds[i] ?? {
-                dataUrl: null,
-                pdfUri: null,
-                pdfPageNumber: null,
-              },
-          )
-        : [{ dataUrl: null, pdfUri: null, pdfPageNumber: null }];
-    const idx = Math.max(
-      0,
-      Math.min(snapshotPages.length - 1, currentPageIndex),
-    );
-    snapshotPages[idx] = strokes.slice();
-
-    if (Platform.OS !== "web") {
-      return;
-    }
-
-    const pageSvgs = snapshotPages
-      .map((pageStrokes, pageIndex) => {
-        const bg = snapshotBackgrounds[pageIndex];
-        const paths = pageStrokes
-          .map((s) => {
-            const d = escapeHtml(s.d);
-            const c = escapeHtml(s.c);
-            return `<path d="${d}" stroke="${c}" stroke-width="${s.w}" fill="none" stroke-linecap="round" stroke-linejoin="round" transform="translate(${s.dx} ${s.dy})" />`;
-          })
-          .join("");
-        const bgImg = bg?.dataUrl
-          ? `<img class="page-bg" src="${escapeHtml(bg.dataUrl)}" alt="" />`
-          : "";
-
-        return `<div class="page">${bgImg}<svg viewBox="0 0 ${PAGE_W} ${PAGE_H}" xmlns="http://www.w3.org/2000/svg">${paths}</svg></div>`;
-      })
-      .join("");
-
-    const title = `NeuraNote ${new Date().toISOString().slice(0, 10)}`;
-    const html = `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>${escapeHtml(title)}</title>
-    <style>
-      @page { size: Letter portrait; margin: 0; }
-      html, body { margin: 0; padding: 0; background: #ddd; }
-      .page {
-        width: 8.5in;
-        height: 11in;
-        background: #fff;
-        margin: 0 auto 12px auto;
-        page-break-after: always;
-        break-after: page;
-        position: relative;
-        overflow: hidden;
-      }
-      .page:last-child { page-break-after: auto; break-after: auto; }
-      .page .page-bg {
-        position: absolute;
-        inset: 0;
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-        z-index: 0;
-      }
-      .page svg {
-        position: relative;
-        z-index: 2;
-        width: 100%;
-        height: 100%;
-        display: block;
-      }
-      @media print {
-        html, body { background: #fff; }
-        .page { margin: 0; box-shadow: none; }
-      }
-    </style>
-  </head>
-  <body>${pageSvgs}</body>
-</html>`;
-
-    const popup = window.open("", "_blank");
-    if (!popup) return;
-    popup.document.open();
-    popup.document.write(html);
-    popup.document.close();
-    popup.focus();
-    setTimeout(() => popup.print(), 120);
+    exportNoteAsPdf({
+      pages,
+      pageBackgrounds,
+      currentPageIndex,
+      activePageStrokes: strokes,
+    });
   };
 
-  // Pointer/responder handlers scoped to one physical page
-  const getPageHandlers = (pageIndex: number) => {
-    if (Platform.OS === "web") {
-      return {
-        onPointerDown: (e: any) => {
-          if (e?.nativeEvent?.button != null && e.nativeEvent.button !== 0)
-            return;
+  // Intentionally memoized around state that changes handler behavior. This avoids
+  // recreating page handler objects during render-only updates like currentPath.
+  const pageHandlersByPage = useMemo(
+    () =>
+      pages.map((_, pageIndex) => {
+        if (Platform.OS === "web") {
+          return {
+            onPointerDown: (e: any) => {
+              if (
+                e?.nativeEvent?.button != null &&
+                e.nativeEvent.button !== 0
+              ) {
+                return;
+              }
 
-          e?.preventDefault?.();
-          e?.stopPropagation?.();
+              e?.preventDefault?.();
+              e?.stopPropagation?.();
 
-          const p = getLocalPagePoint(e);
-          if (!p) {
-            if (tool === "lasso") setSelectedIds([]);
-            return;
-          }
+              const p = getLocalPagePoint(e);
+              if (!p) {
+                if (tool === "lasso") setSelectedIds([]);
+                return;
+              }
 
-          if (pageIndex !== currentPageIndex) selectPage(pageIndex);
+              if (pageIndex !== currentPageIndex) handleSelectPage(pageIndex);
 
-          pointerPageIndex.current = pageIndex;
-          isPointerDown.current = true;
-          e?.nativeEvent?.target?.setPointerCapture?.(e.nativeEvent.pointerId);
+              pointerPageIndex.current = pageIndex;
+              isPointerDown.current = true;
+              e?.nativeEvent?.target?.setPointerCapture?.(
+                e.nativeEvent.pointerId,
+              );
 
-          if (tool === "lasso") {
-            if (selectedIds.length > 0) startMoveSelection(p);
-            else startLasso(p);
-            return;
-          }
+              if (tool === "lasso") {
+                if (selectedIds.length > 0) startMoveSelection(p);
+                else startLasso(p);
+                return;
+              }
 
-          if (tool === "eraser") {
-            setEraserCursor(p);
-            eraserDidMutate.current = false;
-            lastEraserPoint.current = p;
-            eraseAtPoint(p);
-            return;
-          }
+              if (tool === "eraser") {
+                setEraserCursor(p);
+                eraserDidMutate.current = false;
+                lastEraserPoint.current = p;
+                eraseAtPoint(p);
+                return;
+              }
 
-          startStroke(p);
-        },
-        onPointerMove: (e: any) => {
-          if (!isPointerDown.current) return;
-          if (pointerPageIndex.current !== pageIndex) return;
-          e?.preventDefault?.();
+              startStroke(p);
+            },
+            onPointerMove: (e: any) => {
+              if (!isPointerDown.current) return;
+              if (pointerPageIndex.current !== pageIndex) return;
+              e?.preventDefault?.();
 
-          const p = getLocalPagePoint(e);
-          if (!p) return;
+              const p = getLocalPagePoint(e);
+              if (!p) return;
 
-          if (tool === "lasso") {
-            if (isMovingSelection.current) moveSelectionTo(p);
-            else extendLasso(p);
-            return;
-          }
+              if (tool === "lasso") {
+                if (isMovingSelection.current) moveSelectionTo(p);
+                else extendLasso(p);
+                return;
+              }
 
-          if (tool === "eraser") {
-            setEraserCursor(p);
-            const prev = lastEraserPoint.current;
-            if (prev) eraseAlongSegment(prev, p);
-            else eraseAtPoint(p);
-            lastEraserPoint.current = p;
-            return;
-          }
+              if (tool === "eraser") {
+                setEraserCursor(p);
+                const prev = lastEraserPoint.current;
+                if (prev) eraseAlongSegment(prev, p);
+                else eraseAtPoint(p);
+                lastEraserPoint.current = p;
+                return;
+              }
 
-          extendStroke(p);
-        },
-        onPointerUp: (e: any) => {
-          if (!isPointerDown.current) return;
-          if (pointerPageIndex.current !== pageIndex) return;
-          e?.preventDefault?.();
+              extendStroke(p);
+            },
+            onPointerUp: (e: any) => {
+              if (!isPointerDown.current) return;
+              if (pointerPageIndex.current !== pageIndex) return;
+              e?.preventDefault?.();
 
-          isPointerDown.current = false;
-          pointerPageIndex.current = null;
+              isPointerDown.current = false;
+              pointerPageIndex.current = null;
 
-          if (tool === "eraser") {
+              if (tool === "eraser") {
+                flushQueuedEraser();
+                if (eraserDidMutate.current) pushHistory(strokesRef.current);
+                setEraserCursor(null);
+                lastEraserPoint.current = null;
+                eraserDidMutate.current = false;
+                return;
+              }
+
+              if (tool === "lasso") {
+                if (isMovingSelection.current) endMoveSelection();
+                else finishLassoAndSelect();
+                return;
+              }
+
+              endStroke();
+            },
+            onPointerCancel: () => {
+              if (!isPointerDown.current) return;
+              if (pointerPageIndex.current !== pageIndex) return;
+              isPointerDown.current = false;
+              pointerPageIndex.current = null;
+              flushQueuedEraser();
+              setEraserCursor(null);
+              lastEraserPoint.current = null;
+              eraserDidMutate.current = false;
+              endMoveSelection();
+              setLassoPath("");
+              lassoPoints.current = [];
+              cancelStroke();
+            },
+          } as any;
+        }
+
+        return {
+          onStartShouldSetResponder: () => true,
+          onMoveShouldSetResponder: () => true,
+
+          onResponderGrant: (e: any) => {
+            const p = getLocalPagePoint(e);
+            if (!p) return;
+
+            if (pageIndex !== currentPageIndex) handleSelectPage(pageIndex);
+
+            isPointerDown.current = true;
+            pointerPageIndex.current = pageIndex;
+
+            if (tool === "lasso") {
+              if (selectedIds.length > 0) startMoveSelection(p);
+              else startLasso(p);
+              return;
+            }
+
+            if (tool === "eraser") {
+              setEraserCursor(p);
+              eraserDidMutate.current = false;
+              lastEraserPoint.current = p;
+              eraseAtPoint(p);
+              return;
+            }
+
+            startStroke(p);
+          },
+
+          onResponderMove: (e: any) => {
+            if (!isPointerDown.current) return;
+            if (pointerPageIndex.current !== pageIndex) return;
+            const p = getLocalPagePoint(e);
+            if (!p) return;
+
+            if (tool === "lasso") {
+              if (isMovingSelection.current) moveSelectionTo(p);
+              else extendLasso(p);
+              return;
+            }
+
+            if (tool === "eraser") {
+              setEraserCursor(p);
+              const prev = lastEraserPoint.current;
+              if (prev) eraseAlongSegment(prev, p);
+              else eraseAtPoint(p);
+              lastEraserPoint.current = p;
+              return;
+            }
+
+            extendStroke(p);
+          },
+
+          onResponderRelease: () => {
+            if (!isPointerDown.current) return;
+            if (pointerPageIndex.current !== pageIndex) return;
+            isPointerDown.current = false;
+            pointerPageIndex.current = null;
+
+            if (tool === "eraser") {
+              flushQueuedEraser();
+              if (eraserDidMutate.current) pushHistory(strokesRef.current);
+              setEraserCursor(null);
+              lastEraserPoint.current = null;
+              eraserDidMutate.current = false;
+              return;
+            }
+
+            if (tool === "lasso") {
+              if (isMovingSelection.current) endMoveSelection();
+              else finishLassoAndSelect();
+              return;
+            }
+
+            endStroke();
+          },
+          onResponderTerminate: () => {
+            if (!isPointerDown.current) return;
+            if (pointerPageIndex.current !== pageIndex) return;
+            isPointerDown.current = false;
+            pointerPageIndex.current = null;
             flushQueuedEraser();
-            if (eraserDidMutate.current) pushHistory(strokesRef.current);
-            setEraserCursor(null);
-            lastEraserPoint.current = null;
-            eraserDidMutate.current = false;
-            return;
-          }
-
-          if (tool === "lasso") {
-            if (isMovingSelection.current) endMoveSelection();
-            else finishLassoAndSelect();
-            return;
-          }
-
-          endStroke();
-        },
-        onPointerCancel: () => {
-          if (!isPointerDown.current) return;
-          if (pointerPageIndex.current !== pageIndex) return;
-          isPointerDown.current = false;
-          pointerPageIndex.current = null;
-          flushQueuedEraser();
-          setEraserCursor(null);
-          lastEraserPoint.current = null;
-          eraserDidMutate.current = false;
-          endMoveSelection();
-          setLassoPath("");
-          lassoPoints.current = [];
-          cancelStroke();
-        },
-      } as any;
-    }
-
-    return {
-      onStartShouldSetResponder: () => true,
-      onMoveShouldSetResponder: () => true,
-
-      onResponderGrant: (e: any) => {
-        const p = getLocalPagePoint(e);
-        if (!p) return;
-
-        if (pageIndex !== currentPageIndex) selectPage(pageIndex);
-
-        isPointerDown.current = true;
-        pointerPageIndex.current = pageIndex;
-
-        if (tool === "lasso") {
-          if (selectedIds.length > 0) startMoveSelection(p);
-          else startLasso(p);
-          return;
-        }
-
-        if (tool === "eraser") {
-          setEraserCursor(p);
-          eraserDidMutate.current = false;
-          lastEraserPoint.current = p;
-          eraseAtPoint(p);
-          return;
-        }
-
-        startStroke(p);
-      },
-
-      onResponderMove: (e: any) => {
-        if (!isPointerDown.current) return;
-        if (pointerPageIndex.current !== pageIndex) return;
-        const p = getLocalPagePoint(e);
-        if (!p) return;
-
-        if (tool === "lasso") {
-          if (isMovingSelection.current) moveSelectionTo(p);
-          else extendLasso(p);
-          return;
-        }
-
-        if (tool === "eraser") {
-          setEraserCursor(p);
-          const prev = lastEraserPoint.current;
-          if (prev) eraseAlongSegment(prev, p);
-          else eraseAtPoint(p);
-          lastEraserPoint.current = p;
-          return;
-        }
-
-        extendStroke(p);
-      },
-
-      onResponderRelease: () => {
-        if (!isPointerDown.current) return;
-        if (pointerPageIndex.current !== pageIndex) return;
-        isPointerDown.current = false;
-        pointerPageIndex.current = null;
-
-        if (tool === "eraser") {
-          flushQueuedEraser();
-          if (eraserDidMutate.current) pushHistory(strokesRef.current);
-          setEraserCursor(null);
-          lastEraserPoint.current = null;
-          eraserDidMutate.current = false;
-          return;
-        }
-
-        if (tool === "lasso") {
-          if (isMovingSelection.current) endMoveSelection();
-          else finishLassoAndSelect();
-          return;
-        }
-
-        endStroke();
-      },
-      onResponderTerminate: () => {
-        if (!isPointerDown.current) return;
-        if (pointerPageIndex.current !== pageIndex) return;
-        isPointerDown.current = false;
-        pointerPageIndex.current = null;
-        flushQueuedEraser();
-        if (tool === "eraser") eraserDidMutate.current = false;
-        cancelStroke();
-      },
-    };
-  };
-
-  const iconOn = "#0B1026";
-  const iconOff = "rgba(12,18,28,0.86)";
-
-  const toolbarRow =
-    toolbarOrientation === "horizontal"
-      ? ({
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 10,
-        } as any)
-      : ({
-          flexDirection: "column",
-          alignItems: "center",
-          gap: 10,
-        } as any);
+            if (tool === "eraser") eraserDidMutate.current = false;
+            cancelStroke();
+          },
+        };
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pages, tool, selectedIds, currentPageIndex, zoom, strokes, selectedSet],
+  );
 
   return (
     <View
@@ -1966,261 +1217,67 @@ export default function Index() {
       </Pressable>
 
       {/* Floating, draggable toolbar */}
-      <View
-        style={{
-          position: "absolute",
-          left: toolbarPos.x,
-          top: toolbarPos.y,
-          zIndex: 50,
-        }}
-        onLayout={(e) => {
-          const { width, height } = e.nativeEvent.layout;
-          setToolbarSize({ w: width, h: height });
-          // clamp in case size changed
+      <FloatingToolbar
+        toolbarPos={toolbarPos}
+        toolbarOrientation={toolbarOrientation}
+        penColor={penColor}
+        tool={tool}
+        currentPageIndex={currentPageIndex}
+        pageCount={pages.length}
+        selectedCount={selectedIds.length}
+        zoom={zoom}
+        historyIndex={historyIndex}
+        historyLength={history.length}
+        onToolbarLayout={(size) => {
+          setToolbarSize(size);
           setToolbarPos((p) => clampToolbarPos(p.x, p.y));
         }}
-        pointerEvents="box-none"
-      >
-        <View
-          style={[
-            {
-              padding: 8,
-              borderRadius: 18,
-              borderWidth: 1,
-              borderColor: TOPBAR_BORDER,
-              backgroundColor: TOPBAR_BG,
-              shadowColor: "#000",
-              shadowOpacity: 0.12,
-              shadowRadius: 10,
-              shadowOffset: { width: 0, height: 5 },
-              boxShadow: "0 8px 24px rgba(0,0,0,0.16)",
-              backdropFilter: "blur(4px)",
-            },
-            toolbarRow,
-          ]}
-        >
-          {/* 3-dot drag handle (drag to move, double-tap to open mode modal) */}
-          <View
-            {...handlePanResponder.panHandlers}
-            style={{
-              width: 46,
-              height: 46,
-              borderRadius: 14,
-              alignItems: "center",
-              justifyContent: "center",
-              backgroundColor: "rgba(20,26,34,0.05)",
-              borderWidth: 1,
-              borderColor: "rgba(20,26,34,0.14)",
-            }}
-          >
-            <MoreVertical size={20} color={iconOff} />
-          </View>
-
-          <IconButton
-            onPress={() => {
-              const now = Date.now();
-              if (now - lastPenTapMs.current < 280) {
-                setTool("pen");
-                setSizeModalTool("pen");
-                setIsSizeModalOpen(true);
-              } else {
-                setTool("pen");
-                setSelectedIds([]);
-                setLassoPath("");
-                setEraserCursor(null);
-                lastEraserPoint.current = null;
-              }
-              lastPenTapMs.current = now;
-            }}
-            active={tool === "pen"}
-          >
-            <PenLine size={20} color={tool === "pen" ? iconOn : iconOff} />
-          </IconButton>
-
-          <IconButton
-            onPress={() => {
-              const now = Date.now();
-              if (now - lastEraserTapMs.current < 280) {
-                setTool("eraser");
-                setSizeModalTool("eraser");
-                setIsSizeModalOpen(true);
-              } else {
-                setTool("eraser");
-                setSelectedIds([]);
-                setLassoPath("");
-              }
-              lastEraserTapMs.current = now;
-            }}
-            active={tool === "eraser"}
-          >
-            <Eraser size={20} color={tool === "eraser" ? iconOn : iconOff} />
-          </IconButton>
-
-          <IconButton
-            onPress={() => {
-              setTool("lasso");
-              setLassoPath("");
-              lassoPoints.current = [];
-              setEraserCursor(null);
-              lastEraserPoint.current = null;
-            }}
-            active={tool === "lasso"}
-          >
-            <LassoSelect
-              size={20}
-              color={tool === "lasso" ? iconOn : iconOff}
-            />
-          </IconButton>
-
-          <IconButton
-            onPress={() => setIsColorModalOpen(true)}
-            disabled={tool === "eraser"}
-            bgOverride={penColor}
-            borderOverride={"rgba(255,255,255,0.30)"}
-          >
-            <Palette size={20} color={"#ffffff"} />
-          </IconButton>
-
-          <IconButton onPress={() => setIsPagesModalOpen(true)}>
-            <View style={{ alignItems: "center", justifyContent: "center" }}>
-              <Text
-                style={{
-                  color: iconOff,
-                  fontWeight: "900",
-                  fontSize: 12,
-                  lineHeight: 14,
-                }}
-              >
-                Pages
-              </Text>
-              <Text
-                style={{
-                  color: "rgba(20,26,34,0.72)",
-                  fontSize: 10,
-                  lineHeight: 12,
-                }}
-              >
-                {currentPageIndex + 1}/{Math.max(1, pages.length)}
-              </Text>
-            </View>
-          </IconButton>
-
-          <IconButton onPress={exportAsPdf}>
-            <Text style={{ color: iconOff, fontWeight: "900", fontSize: 11 }}>
-              PDF
-            </Text>
-          </IconButton>
-
-          {tool === "lasso" && (
-            <IconButton
-              onPress={deleteSelection}
-              disabled={selectedIds.length === 0}
-              bgOverride={selectedIds.length === 0 ? BTN_BG : "#ff3b30"}
-              borderOverride={
-                selectedIds.length === 0 ? BTN_BORDER : "rgba(255,255,255,0.22)"
-              }
-            >
-              <Trash2
-                size={20}
-                color={selectedIds.length === 0 ? iconOff : "#fff"}
-              />
-            </IconButton>
-          )}
-
-          {/* Zoom controls (compact) */}
-          <View
-            style={
-              toolbarOrientation === "horizontal"
-                ? ({ flexDirection: "row", gap: 8, marginLeft: 6 } as any)
-                : ({ flexDirection: "column", gap: 8, marginTop: 6 } as any)
-            }
-          >
-            <Pressable
-              onPress={() => setZoom((z) => clampZoom(z - 0.1))}
-              style={{
-                width: 46,
-                height: 46,
-                borderRadius: 14,
-                alignItems: "center",
-                justifyContent: "center",
-                backgroundColor: BTN_BG,
-                borderWidth: 1,
-                borderColor: BTN_BORDER,
-              }}
-            >
-              <Text style={{ color: iconOff, fontWeight: "900", fontSize: 18 }}>
-                −
-              </Text>
-            </Pressable>
-
-            <Pressable
-              onPress={() => setZoom(1)}
-              style={{
-                height: 46,
-                paddingHorizontal: 14,
-                borderRadius: 14,
-                alignItems: "center",
-                justifyContent: "center",
-                backgroundColor: BTN_BG,
-                borderWidth: 1,
-                borderColor: BTN_BORDER,
-              }}
-            >
-              <Text style={{ color: iconOff, fontWeight: "900" }}>
-                {Math.round(zoom * 100)}%
-              </Text>
-            </Pressable>
-
-            <Pressable
-              onPress={() => setZoom((z) => clampZoom(z + 0.1))}
-              style={{
-                width: 46,
-                height: 46,
-                borderRadius: 14,
-                alignItems: "center",
-                justifyContent: "center",
-                backgroundColor: BTN_BG,
-                borderWidth: 1,
-                borderColor: BTN_BORDER,
-              }}
-            >
-              <Text style={{ color: iconOff, fontWeight: "900", fontSize: 18 }}>
-                +
-              </Text>
-            </Pressable>
-          </View>
-
-          {/* Undo/Redo controls */}
-          <View
-            style={
-              toolbarOrientation === "horizontal"
-                ? ({ flexDirection: "row", gap: 8, marginLeft: 6 } as any)
-                : ({ flexDirection: "column", gap: 8, marginTop: 6 } as any)
-            }
-          >
-            <IconButton onPress={undo} disabled={historyIndex <= 0}>
-              <RotateCcw
-                size={20}
-                color={historyIndex > 0 ? iconOff : "rgba(255,255,255,0.4)"}
-              />
-            </IconButton>
-
-            <IconButton
-              onPress={redo}
-              disabled={historyIndex >= history.length - 1}
-            >
-              <RotateCw
-                size={20}
-                color={
-                  historyIndex < history.length - 1
-                    ? iconOff
-                    : "rgba(255,255,255,0.4)"
-                }
-              />
-            </IconButton>
-          </View>
-        </View>
-      </View>
+        handlePanHandlers={handlePanResponder.panHandlers}
+        onPenPress={() => {
+          const now = Date.now();
+          if (now - lastPenTapMs.current < 280) {
+            setTool("pen");
+            setSizeModalTool("pen");
+            setIsSizeModalOpen(true);
+          } else {
+            setTool("pen");
+            setSelectedIds([]);
+            setLassoPath("");
+            setEraserCursor(null);
+            lastEraserPoint.current = null;
+          }
+          lastPenTapMs.current = now;
+        }}
+        onEraserPress={() => {
+          const now = Date.now();
+          if (now - lastEraserTapMs.current < 280) {
+            setTool("eraser");
+            setSizeModalTool("eraser");
+            setIsSizeModalOpen(true);
+          } else {
+            setTool("eraser");
+            setSelectedIds([]);
+            setLassoPath("");
+          }
+          lastEraserTapMs.current = now;
+        }}
+        onLassoPress={() => {
+          setTool("lasso");
+          setLassoPath("");
+          lassoPoints.current = [];
+          setEraserCursor(null);
+          lastEraserPoint.current = null;
+        }}
+        onColorPress={() => setIsColorModalOpen(true)}
+        onPagesPress={() => setIsPagesModalOpen(true)}
+        onExportPdf={exportAsPdf}
+        onDeleteSelection={deleteSelection}
+        onZoomOut={() => setZoom((z) => clampZoom(z - 0.1))}
+        onZoomReset={() => setZoom(1)}
+        onZoomIn={() => setZoom((z) => clampZoom(z + 0.1))}
+        onUndo={undo}
+        onRedo={redo}
+      />
 
       {/* Workspace: stacked physical pages */}
       <View
@@ -2259,727 +1316,86 @@ export default function Index() {
             const pageIsActive = pageIndex === currentPageIndex;
             const renderStrokes = pageIsActive ? strokes : pageStrokes;
             const pageBackground = pageBackgrounds[pageIndex] ?? {
-              dataUrl: null,
-              pdfUri: null,
-              pdfPageNumber: null,
+              ...EMPTY_PAGE_BACKGROUND,
             };
             return (
-              <View
+              <PageCanvas
                 key={`page-${pageIndex}`}
-                style={
-                  {
-                    width: PAGE_W * zoom,
-                    height: PAGE_H * zoom,
-                    backgroundColor: PAGE_BG,
-                    borderWidth: 1,
-                    borderColor: PAGE_BORDER,
-                    borderRadius: 10,
-                    overflow: "hidden",
-                    shadowColor: "#000",
-                    shadowOpacity: 0.14,
-                    shadowRadius: 12,
-                    shadowOffset: { width: 0, height: 6 },
-                    boxShadow: "0 8px 24px rgba(0,0,0,0.16)",
-                    touchAction: "none",
-                    userSelect: "none",
-                  } as any
-                }
-                {...(getPageHandlers(pageIndex) as any)}
-              >
-                <View
-                  style={
-                    {
-                      width: PAGE_W,
-                      height: PAGE_H,
-                      transform: [{ scale: zoom }],
-                      transformOrigin: "top left",
-                    } as any
-                  }
-                >
-                  <View
-                    pointerEvents="none"
-                    style={{
-                      position: "absolute",
-                      left: 0,
-                      top: 0,
-                      width: PAGE_W,
-                      height: PAGE_H,
-                      zIndex: 0,
-                    }}
-                  >
-                    {pageBackground.dataUrl ? (
-                      <Image
-                        source={{ uri: pageBackground.dataUrl }}
-                        style={{
-                          position: "absolute",
-                          left: 0,
-                          top: 0,
-                          width: PAGE_W,
-                          height: PAGE_H,
-                        }}
-                        resizeMode="cover"
-                      />
-                    ) : null}
-                    {!pageBackground.dataUrl &&
-                    pageBackground.pdfUri &&
-                    pageBackground.pdfPageNumber ? (
-                      <PdfPageBackground
-                        uri={pageBackground.pdfUri}
-                        pageNumber={pageBackground.pdfPageNumber}
-                        width={PAGE_W}
-                        height={PAGE_H}
-                      />
-                    ) : null}
-                  </View>
-                  <Svg
-                    width={PAGE_W}
-                    height={PAGE_H}
-                    pointerEvents="none"
-                    style={{ position: "absolute", left: 0, top: 0, zIndex: 2 }}
-                  >
-                    <StrokeLayer
-                      strokes={renderStrokes}
-                      showSelection={pageIsActive}
-                      selectedSet={selectedSet}
-                    />
-
-                    {pageIsActive && currentPath ? (
-                      <Path
-                        d={currentPath}
-                        stroke={activeColor}
-                        strokeWidth={activeWidth}
-                        fill="none"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        vectorEffect="non-scaling-stroke"
-                      />
-                    ) : null}
-
-                    {pageIsActive && lassoPath ? (
-                      <Path
-                        d={lassoPath}
-                        stroke="rgba(0,0,0,0.65)"
-                        strokeWidth={2}
-                        fill="rgba(0,0,0,0.05)"
-                        strokeDasharray="6 6"
-                      />
-                    ) : null}
-
-                    {pageIsActive && tool === "eraser" && eraserCursor ? (
-                      <Circle
-                        cx={eraserCursor.x}
-                        cy={eraserCursor.y}
-                        r={eraserRadius}
-                        stroke="rgba(0,0,0,0.45)"
-                        strokeWidth={2}
-                        fill="rgba(20,26,34,0.18)"
-                        vectorEffect="non-scaling-stroke"
-                      />
-                    ) : null}
-                  </Svg>
-                </View>
-              </View>
+                zoom={zoom}
+                pageIndex={pageIndex}
+                pageIsActive={pageIsActive}
+                pageBackground={pageBackground}
+                renderStrokes={renderStrokes}
+                selectedSet={selectedSet}
+                currentPath={currentPath}
+                activeColor={activeColor}
+                activeWidth={activeWidth}
+                lassoPath={lassoPath}
+                tool={tool}
+                eraserCursor={eraserCursor}
+                eraserRadius={eraserRadius}
+                pageHandlers={pageHandlersByPage[pageIndex]}
+              />
             );
           })}
         </View>
       </View>
 
       {/* Toolbar mode modal (opened by double-tap on 3-dot handle) */}
-      <Modal
+      <ToolbarLayoutModal
         visible={isToolbarModeOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setIsToolbarModeOpen(false)}
-      >
-        <Pressable
-          onPress={() => setIsToolbarModeOpen(false)}
-          style={{
-            flex: 1,
-            backgroundColor: "rgba(0,0,0,0.45)",
-            justifyContent: "center",
-            padding: 20,
-          }}
-        >
-          <Pressable
-            onPress={() => {}}
-            style={{
-              alignSelf: "center",
-              width: 320,
-              maxWidth: "100%",
-              backgroundColor: "#FFFFFF",
-              borderRadius: 18,
-              padding: 16,
-              gap: 12,
-              borderWidth: 1,
-              borderColor: "rgba(20,26,34,0.12)",
-            }}
-          >
-            <Text style={{ fontSize: 16, fontWeight: "900", color: "#121826" }}>
-              Toolbar layout
-            </Text>
-
-            <View style={{ flexDirection: "row", gap: 10 }}>
-              <Pressable
-                onPress={() => {
-                  setToolbarOrientation("horizontal");
-                  setIsToolbarModeOpen(false);
-                }}
-                style={{
-                  flex: 1,
-                  paddingVertical: 12,
-                  borderRadius: 12,
-                  borderWidth: 1,
-                  borderColor:
-                    toolbarOrientation === "horizontal"
-                      ? "#fff"
-                      : "rgba(20,26,34,0.18)",
-                  backgroundColor:
-                    toolbarOrientation === "horizontal"
-                      ? "rgba(255,255,255,0.14)"
-                      : "rgba(255,255,255,0.06)",
-                  alignItems: "center",
-                }}
-              >
-                <Text style={{ color: "#121826", fontWeight: "900" }}>
-                  Horizontal
-                </Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => {
-                  setToolbarOrientation("vertical");
-                  setIsToolbarModeOpen(false);
-                }}
-                style={{
-                  flex: 1,
-                  paddingVertical: 12,
-                  borderRadius: 12,
-                  borderWidth: 1,
-                  borderColor:
-                    toolbarOrientation === "vertical"
-                      ? "#fff"
-                      : "rgba(20,26,34,0.18)",
-                  backgroundColor:
-                    toolbarOrientation === "vertical"
-                      ? "rgba(255,255,255,0.14)"
-                      : "rgba(255,255,255,0.06)",
-                  alignItems: "center",
-                }}
-              >
-                <Text style={{ color: "#121826", fontWeight: "900" }}>
-                  Vertical
-                </Text>
-              </Pressable>
-            </View>
-
-            <Pressable
-              onPress={() => setIsToolbarModeOpen(false)}
-              style={{
-                paddingVertical: 12,
-                borderRadius: 12,
-                backgroundColor: "rgba(20,26,34,0.06)",
-                borderWidth: 1,
-                borderColor: "rgba(20,26,34,0.12)",
-                alignItems: "center",
-              }}
-            >
-              <Text style={{ color: "#121826", fontWeight: "900" }}>Close</Text>
-            </Pressable>
-          </Pressable>
-        </Pressable>
-      </Modal>
+        toolbarOrientation={toolbarOrientation}
+        onClose={() => setIsToolbarModeOpen(false)}
+        onSelectOrientation={(orientation) => {
+          setToolbarOrientation(orientation);
+          setIsToolbarModeOpen(false);
+        }}
+      />
 
       {/* Pages modal */}
-      <Modal
+      <PagesModal
         visible={isPagesModalOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setIsPagesModalOpen(false)}
-      >
-        <Pressable
-          onPress={() => setIsPagesModalOpen(false)}
-          style={{
-            flex: 1,
-            backgroundColor: "rgba(0,0,0,0.55)",
-            justifyContent: "center",
-            padding: 20,
-          }}
-        >
-          <Pressable
-            onPress={() => {}}
-            style={{
-              backgroundColor: "#FFFFFF",
-              borderRadius: 18,
-              padding: 16,
-              gap: 12,
-              borderWidth: 1,
-              borderColor: "rgba(20,26,34,0.12)",
-              alignSelf: "center",
-              width: 420,
-              maxWidth: "100%",
-            }}
-          >
-            <Text style={{ fontSize: 16, fontWeight: "900", color: "#121826" }}>
-              Pages
-            </Text>
-            <Text style={{ color: "rgba(20,26,34,0.66)", fontSize: 12 }}>
-              Current page {currentPageIndex + 1} of {Math.max(1, pages.length)}
-            </Text>
-
-            <View style={{ flexDirection: "row", gap: 10 }}>
-              <Pressable
-                onPress={addPageBelowCurrent}
-                style={{
-                  flex: 1,
-                  paddingVertical: 12,
-                  borderRadius: 12,
-                  borderWidth: 1,
-                  borderColor: "rgba(20,26,34,0.16)",
-                  backgroundColor: "rgba(20,26,34,0.06)",
-                  alignItems: "center",
-                }}
-              >
-                <Text style={{ color: "#121826", fontWeight: "900" }}>
-                  Add Below
-                </Text>
-              </Pressable>
-
-              <Pressable
-                onPress={removeCurrentPage}
-                style={{
-                  flex: 1,
-                  paddingVertical: 12,
-                  borderRadius: 12,
-                  borderWidth: 1,
-                  borderColor: "rgba(20,26,34,0.16)",
-                  backgroundColor:
-                    pages.length <= 1 ? "rgba(20,26,34,0.06)" : "#ff3b30",
-                  alignItems: "center",
-                  opacity: pages.length <= 1 ? 0.6 : 1,
-                }}
-              >
-                <Text
-                  style={{
-                    color: pages.length <= 1 ? "#121826" : "#fff",
-                    fontWeight: "900",
-                  }}
-                >
-                  Remove Current
-                </Text>
-              </Pressable>
-            </View>
-
-            <ScrollView
-              style={{ maxHeight: 360 }}
-              contentContainerStyle={{ gap: 10, paddingBottom: 2 }}
-            >
-              {pages.map((pg, idx) => {
-                const selected = idx === currentPageIndex;
-                return (
-                  <View
-                    key={`page-row-${idx}`}
-                    style={{
-                      flexDirection: "row",
-                      gap: 10,
-                      alignItems: "center",
-                    }}
-                  >
-                    <Pressable
-                      onPress={() => selectPage(idx)}
-                      style={{
-                        flex: 1,
-                        paddingVertical: 10,
-                        paddingHorizontal: 12,
-                        borderRadius: 12,
-                        borderWidth: 1,
-                        borderColor: selected
-                          ? "#121826"
-                          : "rgba(20,26,34,0.18)",
-                        backgroundColor: selected
-                          ? "rgba(20,26,34,0.08)"
-                          : "rgba(20,26,34,0.04)",
-                      }}
-                    >
-                      <View
-                        style={{
-                          flexDirection: "row",
-                          gap: 10,
-                          alignItems: "center",
-                        }}
-                      >
-                        <PageThumbnail
-                          strokes={pg}
-                          selected={selected}
-                          label={`Page ${idx + 1}`}
-                        />
-                        <Text style={{ color: "#121826", fontWeight: "800" }}>
-                          {selected ? "Current" : "Select"}
-                        </Text>
-                      </View>
-                    </Pressable>
-
-                    <Pressable
-                      onPress={() => movePage(idx, -1)}
-                      style={{
-                        width: 42,
-                        height: 42,
-                        borderRadius: 10,
-                        alignItems: "center",
-                        justifyContent: "center",
-                        borderWidth: 1,
-                        borderColor: "rgba(20,26,34,0.18)",
-                        backgroundColor:
-                          idx === 0
-                            ? "rgba(20,26,34,0.04)"
-                            : "rgba(20,26,34,0.08)",
-                        opacity: idx === 0 ? 0.5 : 1,
-                      }}
-                    >
-                      <Text style={{ color: "#121826", fontWeight: "900" }}>
-                        ↑
-                      </Text>
-                    </Pressable>
-
-                    <Pressable
-                      onPress={() => movePage(idx, 1)}
-                      style={{
-                        width: 42,
-                        height: 42,
-                        borderRadius: 10,
-                        alignItems: "center",
-                        justifyContent: "center",
-                        borderWidth: 1,
-                        borderColor: "rgba(20,26,34,0.18)",
-                        backgroundColor:
-                          idx === pages.length - 1
-                            ? "rgba(20,26,34,0.04)"
-                            : "rgba(20,26,34,0.08)",
-                        opacity: idx === pages.length - 1 ? 0.5 : 1,
-                      }}
-                    >
-                      <Text style={{ color: "#121826", fontWeight: "900" }}>
-                        ↓
-                      </Text>
-                    </Pressable>
-                  </View>
-                );
-              })}
-            </ScrollView>
-
-            <Pressable
-              onPress={() => setIsPagesModalOpen(false)}
-              style={{
-                paddingVertical: 12,
-                borderRadius: 12,
-                backgroundColor: "rgba(20,26,34,0.06)",
-                borderWidth: 1,
-                borderColor: "rgba(20,26,34,0.12)",
-                alignItems: "center",
-              }}
-            >
-              <Text style={{ color: "#121826", fontWeight: "900" }}>Close</Text>
-            </Pressable>
-          </Pressable>
-        </Pressable>
-      </Modal>
+        pages={pages}
+        currentPageIndex={currentPageIndex}
+        onClose={() => setIsPagesModalOpen(false)}
+        onAddPage={handleAddPageBelowCurrent}
+        onRemovePage={handleRemoveCurrentPage}
+        onSelectPage={handleSelectPage}
+        onMovePage={movePage}
+      />
 
       {/* Size modal */}
-      <Modal
+      <SizeModal
         visible={isSizeModalOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setIsSizeModalOpen(false)}
-      >
-        <Pressable
-          onPress={() => setIsSizeModalOpen(false)}
-          style={{
-            flex: 1,
-            backgroundColor: "rgba(0,0,0,0.55)",
-            justifyContent: "center",
-            padding: 20,
-          }}
-        >
-          <Pressable
-            onPress={() => {}}
-            style={{
-              backgroundColor: "#FFFFFF",
-              borderRadius: 18,
-              padding: 16,
-              gap: 12,
-              borderWidth: 1,
-              borderColor: "rgba(20,26,34,0.06)",
-            }}
-          >
-            <Text style={{ fontSize: 16, fontWeight: "900", color: "#121826" }}>
-              Select size ({sizeModalTool === "pen" ? "Pen" : "Eraser"})
-            </Text>
-
-            <View style={{ flexDirection: "row", gap: 10 }}>
-              {SIZE_OPTIONS.map((opt, idx) => {
-                const selected =
-                  sizeModalTool === "pen"
-                    ? idx === penSizeIndex
-                    : idx === eraserSizeIndex;
-                return (
-                  <Pressable
-                    key={opt.label}
-                    onPress={() => {
-                      if (sizeModalTool === "pen") setPenSizeIndex(idx);
-                      else setEraserSizeIndex(idx);
-                      setIsSizeModalOpen(false);
-                    }}
-                    style={{
-                      flex: 1,
-                      paddingVertical: 12,
-                      borderRadius: 12,
-                      borderWidth: 1,
-                      borderColor: selected ? "#121826" : "rgba(20,26,34,0.18)",
-                      backgroundColor: selected
-                        ? "rgba(20,26,34,0.08)"
-                        : "rgba(20,26,34,0.04)",
-                      alignItems: "center",
-                    }}
-                  >
-                    <Text style={{ color: "#121826", fontWeight: "900" }}>
-                      {opt.label}
-                    </Text>
-                    <Text
-                      style={{ color: "rgba(20,26,34,0.66)", fontSize: 12 }}
-                    >
-                      {sizeModalTool === "pen"
-                        ? `Pen ${opt.width}px`
-                        : `Eraser ${Math.round(opt.width * ERASER_MULT)}px`}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-
-            <Pressable
-              onPress={() => setIsSizeModalOpen(false)}
-              style={{
-                paddingVertical: 12,
-                borderRadius: 12,
-                backgroundColor: "rgba(20,26,34,0.06)",
-                borderWidth: 1,
-                borderColor: "rgba(20,26,34,0.12)",
-                alignItems: "center",
-              }}
-            >
-              <Text style={{ color: "#121826", fontWeight: "900" }}>Close</Text>
-            </Pressable>
-          </Pressable>
-        </Pressable>
-      </Modal>
+        sizeModalTool={sizeModalTool}
+        sizeOptions={SIZE_OPTIONS}
+        penSizeIndex={penSizeIndex}
+        eraserSizeIndex={eraserSizeIndex}
+        eraserMultiplier={ERASER_MULT}
+        onClose={() => setIsSizeModalOpen(false)}
+        onSelectPenSize={setPenSizeIndex}
+        onSelectEraserSize={setEraserSizeIndex}
+      />
 
       {/* Color modal (Hue slider + slots) */}
-      <Modal
+      <ColorModal
         visible={isColorModalOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setIsColorModalOpen(false)}
-      >
-        <Pressable
-          onPress={() => setIsColorModalOpen(false)}
-          style={{
-            flex: 1,
-            backgroundColor: "rgba(0,0,0,0.35)",
-            alignItems: "flex-end",
-            justifyContent: "flex-start",
-            paddingTop: 60,
-            paddingRight: 16,
-            paddingLeft: 16,
-          }}
-        >
-          <Pressable
-            onPress={() => {}}
-            style={{
-              width: 340,
-              maxWidth: "100%",
-              backgroundColor: "#FFFFFF",
-              borderRadius: 18,
-              padding: 14,
-              borderWidth: 1,
-              borderColor: "rgba(20,26,34,0.12)",
-            }}
-          >
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                justifyContent: "space-between",
-                marginBottom: 12,
-              }}
-            >
-              <Text
-                style={{ color: "#121826", fontSize: 18, fontWeight: "900" }}
-              >
-                Color
-              </Text>
-
-              <View style={{ flexDirection: "row", gap: 10 }}>
-                <Pressable
-                  onPress={() => {
-                    const firstEmpty = colorSlots.findIndex((c) => !c);
-                    const target = firstEmpty === -1 ? 0 : firstEmpty;
-                    setColorSlots((prev) => {
-                      const next = [...prev];
-                      next[target] = penColor;
-                      return next;
-                    });
-                    setActiveSlotIndex(target);
-                  }}
-                  style={{
-                    width: 34,
-                    height: 34,
-                    borderRadius: 10,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    backgroundColor: "rgba(20,26,34,0.06)",
-                  }}
-                >
-                  <Text
-                    style={{
-                      color: "#121826",
-                      fontSize: 18,
-                      fontWeight: "900",
-                    }}
-                  >
-                    +
-                  </Text>
-                </Pressable>
-
-                <Pressable
-                  onPress={() => setIsColorModalOpen(false)}
-                  style={{
-                    width: 34,
-                    height: 34,
-                    borderRadius: 10,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    backgroundColor: "rgba(20,26,34,0.06)",
-                  }}
-                >
-                  <Text
-                    style={{
-                      color: "#121826",
-                      fontSize: 18,
-                      fontWeight: "900",
-                    }}
-                  >
-                    ×
-                  </Text>
-                </Pressable>
-              </View>
-            </View>
-
-            <View style={{ gap: 10 }}>
-              <View
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                }}
-              >
-                <Text style={{ color: "rgba(20,26,34,0.72)", fontSize: 12 }}>
-                  Hue
-                </Text>
-
-                <View
-                  style={{
-                    width: 22,
-                    height: 22,
-                    borderRadius: 999,
-                    backgroundColor: penColor,
-                    borderWidth: 1,
-                    borderColor: "rgba(20,26,34,0.25)",
-                  }}
-                />
-              </View>
-
-              <View
-                style={{
-                  height: 28,
-                  borderRadius: 14,
-                  overflow: "hidden",
-                  borderWidth: 1,
-                  borderColor: "rgba(20,26,34,0.12)",
-                  justifyContent: "center",
-                }}
-              >
-                <View
-                  style={{
-                    position: "absolute",
-                    left: 0,
-                    right: 0,
-                    top: 0,
-                    bottom: 0,
-                  }}
-                >
-                  <HueBar width={340 - 28} height={28} />
-                </View>
-
-                <Slider
-                  minimumValue={0}
-                  maximumValue={360}
-                  step={1}
-                  value={hue}
-                  onValueChange={(v) => {
-                    const h = typeof v === "number" ? v : Number(v);
-                    setHue(h);
-                    const c = colorFromHue(h);
-                    setPenColor(c);
-                    setActiveSlotIndex(null);
-                    if (tool !== "pen") setTool("pen");
-                  }}
-                  minimumTrackTintColor="transparent"
-                  maximumTrackTintColor="transparent"
-                  thumbTintColor="#ffffff"
-                />
-              </View>
-
-              <Text style={{ color: "rgba(20,26,34,0.66)", fontSize: 12 }}>
-                Tap a slot to use • Long-press to save
-              </Text>
-
-              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
-                {colorSlots.map((c, idx) => {
-                  const selected = idx === activeSlotIndex;
-                  return (
-                    <Pressable
-                      key={idx}
-                      onPress={() => {
-                        if (!c) return;
-                        setPenColor(c);
-                        setActiveSlotIndex(idx);
-                        if (tool !== "pen") setTool("pen");
-                      }}
-                      onLongPress={() => {
-                        setColorSlots((prev) => {
-                          const next = [...prev];
-                          next[idx] = penColor;
-                          return next;
-                        });
-                        setActiveSlotIndex(idx);
-                      }}
-                      style={{
-                        width: 26,
-                        height: 26,
-                        borderRadius: 999,
-                        backgroundColor: c || "rgba(20,26,34,0.06)",
-                        borderWidth: selected ? 3 : 1,
-                        borderColor: selected
-                          ? "#121826"
-                          : "rgba(20,26,34,0.18)",
-                      }}
-                    />
-                  );
-                })}
-              </View>
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
+        hue={hue}
+        penColor={penColor}
+        colorSlots={colorSlots}
+        activeSlotIndex={activeSlotIndex}
+        tool={tool}
+        onClose={() => setIsColorModalOpen(false)}
+        onHueChange={(nextHue, nextColor) => {
+          setHue(nextHue);
+          setPenColor(nextColor);
+          setActiveSlotIndex(null);
+        }}
+        onActivatePenTool={() => setTool("pen")}
+        onSetPenColor={setPenColor}
+        onSetColorSlots={setColorSlots}
+        onSetActiveSlotIndex={setActiveSlotIndex}
+      />
     </View>
   );
 }

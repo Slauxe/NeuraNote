@@ -1,52 +1,55 @@
-# Welcome to your Expo app 👋
+# NeuroNote
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+NeuroNote is an Expo-based handwriting notebook for creating blank notes or importing PDFs and annotating them page by page.
 
-## Get started
+## Current Features
 
-1. Install dependencies
+- Create and rename notes from the explore screen
+- Import PDFs into a note and turn each page into an annotation surface
+- Draw with a pen tool, erase strokes, and lasso-select content
+- Manage multiple pages inside a note
+- Export notes as PDF
+- Persist notes locally on device and in the browser
 
-   ```bash
-   npm install
-   ```
+## Project Structure
 
-2. Start the app
+- `app/(tabs)/explore.tsx`: note library, note creation, PDF import
+- `app/(tabs)/index.tsx`: note editor, drawing tools, page management, export
+- `lib/notesStorage.ts`: local persistence for note metadata and note documents
+- `lib/noteDocument.ts`: shared note document types and defaults
+- `components/PdfPageBackground.*`: native/web PDF background rendering split
 
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+## Running The App
 
 ```bash
-npm run reset-project
+npm install
+npx expo start
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Helpful commands:
 
-## Learn more
+```bash
+npm run android
+npm run ios
+npm run web
+npm run lint
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+## Storage Model
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+Notes are stored locally.
 
-## Join the community
+- Native platforms use Expo file storage with one JSON file per note plus an index file
+- Web uses browser storage for the same note document shape
 
-Join our community of developers creating universal apps.
+## Known Constraints
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
-# NeuraNote
-# Neuranote01
+- The editor is still implemented as a large single screen and is a good candidate for further component extraction
+- Web PDF imports can become heavy for large documents because page backgrounds are stored locally
+- There is currently no cloud sync or account system
+
+## Next Refactor Targets
+
+- Split editor state management into smaller hooks and components
+- Move more serialization logic out of the editor screen
+- Add tests around note persistence and page/document normalization

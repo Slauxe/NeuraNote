@@ -1,26 +1,15 @@
 // lib/notesStorage.ts
 import * as FileSystem from "expo-file-system/legacy";
 import { Platform } from "react-native";
+import { createEmptyNoteDoc, type NoteDoc } from "./noteDocument";
+
+export type { NoteDoc } from "./noteDocument";
 
 export type NoteMeta = {
   id: string;
   title: string;
   updatedAt: number; // epoch ms
   coverColor?: string; // hex like "#8B5CF6"
-};
-
-export type NoteDoc = {
-  strokes: any[]; // keep as any[] for now to avoid circular imports from index.tsx
-  pages?: Array<{
-    id?: string;
-    strokes: any[];
-    backgroundDataUrl?: string;
-    backgroundPdfUri?: string;
-    backgroundPdfPageNumber?: number;
-  }>;
-  currentPageIndex?: number;
-  // Add more later if you want: zoom, page settings, etc.
-  // zoom?: number;
 };
 
 type NoteFile = {
@@ -205,11 +194,7 @@ export async function createNote(
     updatedAt: t,
     coverColor,
     doc:
-      initialDoc ?? {
-        strokes: [],
-        pages: [{ id: "page-1", strokes: [] }],
-        currentPageIndex: 0,
-      },
+      initialDoc ?? createEmptyNoteDoc(),
   };
 
   await ensureNotesDir();
@@ -241,11 +226,7 @@ export async function loadNote(
       coverColor: nf.coverColor,
     },
     doc:
-      nf.doc ?? {
-        strokes: [],
-        pages: [{ id: "page-1", strokes: [] }],
-        currentPageIndex: 0,
-      },
+      nf.doc ?? createEmptyNoteDoc(),
   };
 }
 
@@ -267,11 +248,8 @@ export async function saveNote(
   const coverColor = updates.coverColor ?? existing?.coverColor ?? "#8B5CF6";
   const doc =
     updates.doc ??
-    existing?.doc ?? {
-      strokes: [],
-      pages: [{ id: "page-1", strokes: [] }],
-      currentPageIndex: 0,
-    };
+    existing?.doc ??
+    createEmptyNoteDoc();
 
   const nextFile: NoteFile = {
     id,
