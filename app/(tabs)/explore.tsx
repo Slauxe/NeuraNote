@@ -289,7 +289,9 @@ export default function Explore() {
   const [createOpen, setCreateOpen] = useState(false);
   const [createTitle, setCreateTitle] = useState("No name");
   const [createCover, setCreateCover] = useState(DEFAULT_COVER);
-  const [createMode, setCreateMode] = useState<"blank" | "pdf">("blank");
+  const [createMode, setCreateMode] = useState<"blank" | "pdf" | "infinite">(
+    "blank",
+  );
   const [createPdfName, setCreatePdfName] = useState<string | null>(null);
   const [createPdfPageCount, setCreatePdfPageCount] = useState(0);
   const [createPdfDoc, setCreatePdfDoc] = useState<NoteDoc | null>(null);
@@ -358,7 +360,26 @@ export default function Explore() {
     const title = createTitle.trim() || "No name";
     try {
       const initialDoc: NoteDoc | undefined =
-        createMode === "pdf" ? (createPdfDoc ?? undefined) : undefined;
+        createMode === "pdf"
+          ? (createPdfDoc ?? undefined)
+          : createMode === "infinite"
+            ? {
+                kind: "infinite",
+                board: {
+                  width: 2400,
+                  height: 1800,
+                  backgroundStyle: "grid",
+                },
+                strokes: [],
+                pages: [{ id: "board-1", strokes: [] }],
+                currentPageIndex: 0,
+              }
+            : {
+                kind: "page",
+                strokes: [],
+                pages: [{ id: "page-1", strokes: [] }],
+                currentPageIndex: 0,
+              };
 
       const id = await createNote(title, createCover, initialDoc);
       setCreateOpen(false);
@@ -388,6 +409,7 @@ export default function Explore() {
         setCreatePdfName(file.name);
         setCreatePdfPageCount(pages.length);
         setCreatePdfDoc({
+          kind: "page",
           strokes: [],
           pages: pages.map((bg, i) => ({
             id: `page-${i + 1}`,
@@ -426,6 +448,7 @@ export default function Explore() {
       setCreatePdfName(asset.name ?? "Imported PDF");
       setCreatePdfPageCount(pageCount);
       setCreatePdfDoc({
+        kind: "page",
         strokes: [],
         pages: Array.from({ length: pageCount }, (_, i) => ({
           id: `page-${i + 1}`,
@@ -711,7 +734,29 @@ export default function Explore() {
                 }}
               >
                 <Text style={{ color: "#121826", fontWeight: "900" }}>
-                  Blank page
+                  Simple canvas
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setCreateMode("infinite")}
+                style={{
+                  flex: 1,
+                  paddingVertical: 10,
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor:
+                    createMode === "infinite"
+                      ? "#121826"
+                      : "rgba(20,26,34,0.12)",
+                  backgroundColor:
+                    createMode === "infinite"
+                      ? "rgba(20,26,34,0.08)"
+                      : "rgba(20,26,34,0.04)",
+                  alignItems: "center",
+                }}
+              >
+                <Text style={{ color: "#121826", fontWeight: "900" }}>
+                  Infinite canvas
                 </Text>
               </Pressable>
               <Pressable
@@ -760,7 +805,16 @@ export default function Explore() {
                     : "No PDF selected"}
                 </Text>
               </View>
-            ) : null}
+            ) : createMode === "infinite" ? (
+              <Text style={{ color: TEXT_MUTED, fontSize: 12 }}>
+                Creates a large freeform board for diagrams, brainstorming, and
+                long-form notes.
+              </Text>
+            ) : (
+              <Text style={{ color: TEXT_MUTED, fontSize: 12 }}>
+                Creates the standard fixed-size page canvas you already have.
+              </Text>
+            )}
 
             <Text
               style={{ color: TEXT_MUTED, fontWeight: "800", marginTop: 4 }}

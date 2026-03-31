@@ -1,6 +1,9 @@
 import { Platform } from "react-native";
 
 import { PAGE_H, PAGE_W, type PageBackground, type Stroke } from "@/lib/editorTypes";
+import type { NoteKind } from "@/lib/noteDocument";
+
+const INFINITE_EXPORT_MARGIN = 64;
 
 function escapeHtml(input: string) {
   return input
@@ -11,16 +14,71 @@ function escapeHtml(input: string) {
     .replaceAll("'", "&#39;");
 }
 
+function getInfiniteExportBounds(
+  strokes: Stroke[],
+  pageWidth: number,
+  pageHeight: number,
+) {
+  if (strokes.length === 0) {
+    return { minX: 0, minY: 0, width: pageWidth, height: pageHeight };
+  }
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const stroke of strokes) {
+    const pad = Math.max(1, stroke.w / 2);
+    minX = Math.min(minX, stroke.bbox.minX + stroke.dx - pad);
+    minY = Math.min(minY, stroke.bbox.minY + stroke.dy - pad);
+    maxX = Math.max(maxX, stroke.bbox.maxX + stroke.dx + pad);
+    maxY = Math.max(maxY, stroke.bbox.maxY + stroke.dy + pad);
+  }
+
+  const croppedMinX = Math.max(0, Math.floor(minX - INFINITE_EXPORT_MARGIN));
+  const croppedMinY = Math.max(0, Math.floor(minY - INFINITE_EXPORT_MARGIN));
+  const croppedMaxX = Math.min(
+    pageWidth,
+    Math.ceil(maxX + INFINITE_EXPORT_MARGIN),
+  );
+  const croppedMaxY = Math.min(
+    pageHeight,
+    Math.ceil(maxY + INFINITE_EXPORT_MARGIN),
+  );
+
+  return {
+    minX: croppedMinX,
+    minY: croppedMinY,
+    width: Math.max(1, croppedMaxX - croppedMinX),
+    height: Math.max(1, croppedMaxY - croppedMinY),
+  };
+}
+
+function getInfinitePageStyle(width: number, height: number) {
+  const ratio = width / Math.max(1, height);
+  if (ratio >= 1) {
+    return { widthIn: 11, heightIn: Math.max(1, 11 / ratio) };
+  }
+  return { widthIn: Math.max(1, 11 * ratio), heightIn: 11 };
+}
+
 export function exportNoteAsPdf({
   pages,
   pageBackgrounds,
   currentPageIndex,
   activePageStrokes,
+  noteKind = "page",
+  pageWidth = PAGE_W,
+  pageHeight = PAGE_H,
 }: {
   pages: Stroke[][];
   pageBackgrounds: PageBackground[];
   currentPageIndex: number;
   activePageStrokes: Stroke[];
+  noteKind?: NoteKind;
+  pageWidth?: number;
+  pageHeight?: number;
 }) {
   const snapshotPages =
     pages.length > 0 ? pages.map((page) => page.slice()) : [[] as Stroke[]];
@@ -48,6 +106,14 @@ export function exportNoteAsPdf({
   const pageSvgs = snapshotPages
     .map((pageStrokes, pageIndex) => {
       const bg = snapshotBackgrounds[pageIndex];
+      const exportBounds =
+        noteKind === "infinite"
+          ? getInfiniteExportBounds(pageStrokes, pageWidth, pageHeight)
+          : { minX: 0, minY: 0, width: pageWidth, height: pageHeight };
+      const infinitePageStyle =
+        noteKind === "infinite"
+          ? getInfinitePageStyle(exportBounds.width, exportBounds.height)
+          : null;
       const paths = pageStrokes
         .map((stroke) => {
           const d = escapeHtml(stroke.d);
@@ -59,7 +125,11 @@ export function exportNoteAsPdf({
         ? `<img class="page-bg" src="${escapeHtml(bg.dataUrl)}" alt="" />`
         : "";
 
-      return `<div class="page">${bgImg}<svg viewBox="0 0 ${PAGE_W} ${PAGE_H}" xmlns="http://www.w3.org/2000/svg">${paths}</svg></div>`;
+      return `<div class="page"${
+        infinitePageStyle
+          ? ` style="width:${infinitePageStyle.widthIn}in;height:${infinitePageStyle.heightIn}in;"`
+          : ""
+      }>${bgImg}<svg viewBox="${exportBounds.minX} ${exportBounds.minY} ${exportBounds.width} ${exportBounds.height}" xmlns="http://www.w3.org/2000/svg">${paths}</svg></div>`;
     })
     .join("");
 
@@ -70,7 +140,7 @@ export function exportNoteAsPdf({
     <meta charset="utf-8" />
     <title>${escapeHtml(title)}</title>
     <style>
-      @page { size: Letter portrait; margin: 0; }
+      @page { size: ${noteKind === "infinite" ? "auto" : "Letter portrait"}; margin: 0; }
       html, body { margin: 0; padding: 0; background: #ddd; }
       .page {
         width: 8.5in;

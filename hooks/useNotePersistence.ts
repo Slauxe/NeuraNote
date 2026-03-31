@@ -3,6 +3,11 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 
 import { buildDocFromPages, normalizeDocToPages } from "@/lib/editorDocument";
 import type { PageBackground, Stroke } from "@/lib/editorTypes";
+import type {
+  InfiniteBoard,
+  InfiniteBoardBackgroundStyle,
+  NoteKind,
+} from "@/lib/noteDocument";
 import { createNote, loadNote, saveNote } from "@/lib/notesStorage";
 
 type UseNotePersistenceArgs = {
@@ -13,8 +18,14 @@ type UseNotePersistenceArgs = {
   pageBackgrounds: PageBackground[];
   currentPageIndex: number;
   strokes: Stroke[];
+  noteKind: NoteKind;
+  boardSize: InfiniteBoard | null;
+  boardBackgroundStyle: InfiniteBoardBackgroundStyle;
   emptyBackground: PageBackground;
   resetCanvasState: () => void;
+  setNoteKind: (kind: NoteKind) => void;
+  setBoardSize: (board: InfiniteBoard | null) => void;
+  setBoardBackgroundStyle: (style: InfiniteBoardBackgroundStyle) => void;
   setPages: (pages: Stroke[][]) => void;
   setPageBackgrounds: (backgrounds: PageBackground[]) => void;
   setCurrentPageIndex: (index: number) => void;
@@ -31,8 +42,14 @@ export function useNotePersistence({
   pageBackgrounds,
   currentPageIndex,
   strokes,
+  noteKind,
+  boardSize,
+  boardBackgroundStyle,
   emptyBackground,
   resetCanvasState,
+  setNoteKind,
+  setBoardSize,
+  setBoardBackgroundStyle,
   setPages,
   setPageBackgrounds,
   setCurrentPageIndex,
@@ -79,6 +96,9 @@ export function useNotePersistence({
 
         const normalized = normalizeDocToPages(data?.doc);
         const pageStrokes = normalized.pages[normalized.currentPageIndex] ?? [];
+        setNoteKind(normalized.kind);
+        setBoardSize(normalized.board);
+        setBoardBackgroundStyle(normalized.board?.backgroundStyle ?? "grid");
         setPages(normalized.pages);
         setPageBackgrounds(normalized.pageBackgrounds);
         setCurrentPageIndex(normalized.currentPageIndex);
@@ -87,6 +107,9 @@ export function useNotePersistence({
         setHistoryIndex(0);
       } catch {
         if (!cancelled) {
+          setNoteKind("page");
+          setBoardSize(null);
+          setBoardBackgroundStyle("grid");
           setPages([[]]);
           setPageBackgrounds([{ ...emptyBackground }]);
           setCurrentPageIndex(0);
@@ -111,6 +134,9 @@ export function useNotePersistence({
     router,
     emptyBackground,
     resetCanvasState,
+    setNoteKind,
+    setBoardSize,
+    setBoardBackgroundStyle,
     setCurrentPageIndex,
     setHistory,
     setHistoryIndex,
@@ -129,7 +155,15 @@ export function useNotePersistence({
     saveTimerRef.current = setTimeout(() => {
       if (hydrating) return;
 
-      const doc = buildDocFromPages(pages, pageBackgrounds, currentPageIndex);
+      const doc = buildDocFromPages(
+        pages,
+        pageBackgrounds,
+        currentPageIndex,
+        noteKind,
+        boardSize
+          ? { ...boardSize, backgroundStyle: boardBackgroundStyle }
+          : null,
+      );
       saveNote(activeNoteId, { doc }).catch(() => {});
     }, 450);
 
@@ -146,6 +180,9 @@ export function useNotePersistence({
     pages,
     pageBackgrounds,
     currentPageIndex,
+    noteKind,
+    boardSize,
+    boardBackgroundStyle,
     isPointerDownRef,
   ]);
 

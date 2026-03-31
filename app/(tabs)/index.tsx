@@ -11,19 +11,21 @@ import React, {
 import { FloatingToolbar } from "@/components/editor/FloatingToolbar";
 import { PageCanvas } from "@/components/editor/PageCanvas";
 import { ColorModal } from "@/components/editor/modals/ColorModal";
+import { BoardBackgroundModal } from "@/components/editor/modals/BoardBackgroundModal";
 import { PagesModal } from "@/components/editor/modals/PagesModal";
 import { SizeModal } from "@/components/editor/modals/SizeModal";
 import { ToolbarLayoutModal } from "@/components/editor/modals/ToolbarLayoutModal";
+import { useCanvasInteractions } from "@/hooks/useCanvasInteractions";
 import { useEditorPageState } from "@/hooks/useEditorPageState";
 import { useNotePersistence } from "@/hooks/useNotePersistence";
 import { exportNoteAsPdf } from "@/lib/editorExport";
-import {
-  EMPTY_PAGE_BACKGROUND,
-  PAGE_H,
-  PAGE_W,
-  type Point,
-  type Stroke,
-} from "@/lib/editorTypes";
+import { getCanvasSize } from "@/lib/editorGeometry";
+import type {
+  InfiniteBoard,
+  InfiniteBoardBackgroundStyle,
+  NoteKind,
+} from "@/lib/noteDocument";
+import { EMPTY_PAGE_BACKGROUND } from "@/lib/editorTypes";
 import { PanResponder, Platform, Pressable, Text, View } from "react-native";
 
 // Theme
@@ -60,298 +62,10 @@ const DEFAULT_SLOTS: string[] = [
   "#FF2D55",
 ];
 
-function dist(a: Point, b: Point) {
-  const dx = a.x - b.x;
-  const dy = a.y - b.y;
-  return Math.hypot(dx, dy);
-}
-
-function mid(a: Point, b: Point): Point {
-  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-}
-
-/**
- * Smooth path using quadratic curves through midpoints (signature-pad style).
- */
-function pointsToSmoothPath(points: Point[]) {
-  if (points.length === 0) return "";
-  if (points.length === 1) {
-    const p = points[0];
-    return `M ${p.x} ${p.y} L ${p.x + 0.01} ${p.y + 0.01}`;
-  }
-  if (points.length === 2) {
-    const [p0, p1] = points;
-    return `M ${p0.x} ${p0.y} L ${p1.x} ${p1.y}`;
-  }
-
-  let d = "";
-  const p0 = points[0];
-  d += `M ${p0.x} ${p0.y} `;
-
-  for (let i = 1; i < points.length - 1; i++) {
-    const p1 = points[i];
-    const p2 = points[i + 1];
-    const m = mid(p1, p2);
-    d += `Q ${p1.x} ${p1.y} ${m.x} ${m.y} `;
-  }
-
-  const secondLast = points[points.length - 2];
-  const last = points[points.length - 1];
-  d += `Q ${secondLast.x} ${secondLast.y} ${last.x} ${last.y}`;
-
-  return d;
-}
-
-function computeBBox(points: Point[]) {
-  let minX = Infinity,
-    minY = Infinity,
-    maxX = -Infinity,
-    maxY = -Infinity;
-  for (const p of points) {
-    if (p.x < minX) minX = p.x;
-    if (p.y < minY) minY = p.y;
-    if (p.x > maxX) maxX = p.x;
-    if (p.y > maxY) maxY = p.y;
-  }
-  if (!isFinite(minX)) minX = minY = maxX = maxY = 0;
-  return { minX, minY, maxX, maxY };
-}
-
-/** Point in polygon (ray casting). */
-function pointInPoly(pt: Point, poly: Point[]) {
-  let inside = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const xi = poly[i].x,
-      yi = poly[i].y;
-    const xj = poly[j].x,
-      yj = poly[j].y;
-
-    const intersect =
-      yi > pt.y !== yj > pt.y &&
-      pt.x < ((xj - xi) * (pt.y - yi)) / (yj - yi + 1e-9) + xi;
-
-    if (intersect) inside = !inside;
-  }
-  return inside;
-}
-
-/** Quick reject: bbox overlap */
-function bboxOverlap(
-  a: { minX: number; minY: number; maxX: number; maxY: number },
-  b: { minX: number; minY: number; maxX: number; maxY: number },
-) {
-  return !(
-    a.maxX < b.minX ||
-    a.minX > b.maxX ||
-    a.maxY < b.minY ||
-    a.minY > b.maxY
-  );
-}
-
-function uid() {
-  return Math.random().toString(36).slice(2) + Date.now().toString(36);
-}
-
-function pointAt(a: Point, b: Point, t: number): Point {
-  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
-}
-
-function lerpPoint(a: Point, b: Point, t: number): Point {
-  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
-}
-
-function smoothTowards(prev: Point, next: Point, alpha: number): Point {
-  return {
-    x: prev.x + (next.x - prev.x) * alpha,
-    y: prev.y + (next.y - prev.y) * alpha,
-  };
-}
-
-function segmentCircleTs(a: Point, b: Point, center: Point, radius: number) {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const fx = a.x - center.x;
-  const fy = a.y - center.y;
-
-  const A = dx * dx + dy * dy;
-  if (A < 1e-9) return [] as number[];
-
-  const B = 2 * (fx * dx + fy * dy);
-  const C = fx * fx + fy * fy - radius * radius;
-  const disc = B * B - 4 * A * C;
-  if (disc < 0) return [] as number[];
-
-  const out: number[] = [];
-  const root = Math.sqrt(Math.max(0, disc));
-  const t1 = (-B - root) / (2 * A);
-  const t2 = (-B + root) / (2 * A);
-  if (t1 >= 0 && t1 <= 1) out.push(t1);
-  if (t2 >= 0 && t2 <= 1) out.push(t2);
-  out.sort((x, y) => x - y);
-
-  if (out.length <= 1) return out;
-
-  const deduped = [out[0]];
-  for (let i = 1; i < out.length; i++) {
-    if (Math.abs(out[i] - deduped[deduped.length - 1]) > 1e-5) {
-      deduped.push(out[i]);
-    }
-  }
-  return deduped;
-}
-
-/**
- * Real eraser: split a stroke into runs of points that are OUTSIDE the eraser circle.
- * Returns:
- * - null if untouched
- * - [] if fully erased
- * - [ ...newStrokes ] if partially erased (may split)
- */
-function splitStrokeByEraserCircle(s: Stroke, center: Point, radius: number) {
-  // Quick bbox check in page coords
-  const sb = {
-    minX: s.bbox.minX + s.dx,
-    minY: s.bbox.minY + s.dy,
-    maxX: s.bbox.maxX + s.dx,
-    maxY: s.bbox.maxY + s.dy,
-  };
-  const eb = {
-    minX: center.x - radius,
-    minY: center.y - radius,
-    maxX: center.x + radius,
-    maxY: center.y + radius,
-  };
-  if (!bboxOverlap(sb, eb)) return null;
-
-  let anyErased = false;
-  const runs: Point[][] = [];
-  let cur: Point[] = [];
-
-  if (s.points.length === 0) return null;
-
-  const pagePoints = s.points.map((p) => ({ x: p.x + s.dx, y: p.y + s.dy }));
-
-  for (let i = 0; i < pagePoints.length - 1; i++) {
-    const a = pagePoints[i];
-    const b = pagePoints[i + 1];
-    const roots = segmentCircleTs(a, b, center, radius);
-    const cuts = [0, ...roots, 1];
-
-    const outsideIntervals: { t0: number; t1: number }[] = [];
-    for (let j = 0; j < cuts.length - 1; j++) {
-      const t0 = cuts[j];
-      const t1 = cuts[j + 1];
-      if (t1 - t0 < 1e-6) continue;
-      const tm = (t0 + t1) / 2;
-      const m = pointAt(a, b, tm);
-      const mdx = m.x - center.x;
-      const mdy = m.y - center.y;
-      const outside = mdx * mdx + mdy * mdy > radius * radius;
-      if (outside) outsideIntervals.push({ t0, t1 });
-      else anyErased = true;
-    }
-
-    if (outsideIntervals.length === 0) {
-      if (cur.length > 0) {
-        runs.push(cur);
-        cur = [];
-      }
-      continue;
-    }
-
-    if (cur.length > 0 && outsideIntervals[0].t0 > 1e-6) {
-      runs.push(cur);
-      cur = [];
-    }
-
-    for (let j = 0; j < outsideIntervals.length; j++) {
-      const { t0, t1 } = outsideIntervals[j];
-      const start = pointAt(a, b, t0);
-      const end = pointAt(a, b, t1);
-      const startLocal = { x: start.x - s.dx, y: start.y - s.dy };
-      const endLocal = { x: end.x - s.dx, y: end.y - s.dy };
-
-      if (cur.length === 0) cur.push(startLocal);
-      else if (dist(cur[cur.length - 1], startLocal) > 1e-4) {
-        runs.push(cur);
-        cur = [startLocal];
-      }
-
-      if (dist(cur[cur.length - 1], endLocal) > 1e-4) cur.push(endLocal);
-
-      if (t1 < 1 - 1e-6) {
-        runs.push(cur);
-        cur = [];
-      }
-    }
-  }
-
-  const lastPage = pagePoints[pagePoints.length - 1];
-  const ldx = lastPage.x - center.x;
-  const ldy = lastPage.y - center.y;
-  const lastOutside = ldx * ldx + ldy * ldy > radius * radius;
-  if (lastOutside) {
-    const lastLocal = { x: lastPage.x - s.dx, y: lastPage.y - s.dy };
-    if (cur.length === 0) cur.push(lastLocal);
-    else if (dist(cur[cur.length - 1], lastLocal) > 1e-4) cur.push(lastLocal);
-  } else {
-    anyErased = true;
-    if (cur.length > 0) {
-      runs.push(cur);
-      cur = [];
-    }
-  }
-
-  if (cur.length > 0) runs.push(cur);
-
-  if (!anyErased) return null;
-
-  const next: Stroke[] = [];
-  for (const pts of runs) {
-    if (pts.length < MIN_POINTS_TO_SAVE) continue;
-
-    const d = pointsToSmoothPath(pts);
-    if (!d.trim()) continue;
-
-    next.push({
-      ...s,
-      id: uid(),
-      points: pts,
-      d,
-      bbox: computeBBox(pts),
-    });
-  }
-
-  return next;
-}
-
-function splitStrokeByEraserPathPoints(
-  s: Stroke,
-  centers: Point[],
-  radius: number,
-) {
-  if (centers.length === 0) return null;
-
-  let parts: Stroke[] = [s];
-  let changed = false;
-
-  for (const center of centers) {
-    if (parts.length === 0) break;
-
-    const nextParts: Stroke[] = [];
-    for (const part of parts) {
-      const replaced = splitStrokeByEraserCircle(part, center, radius);
-      if (replaced === null) nextParts.push(part);
-      else {
-        changed = true;
-        nextParts.push(...replaced);
-      }
-    }
-    parts = nextParts;
-  }
-
-  return changed ? parts : null;
-}
+const INFINITE_EDGE_TRIGGER = 220;
+const INFINITE_EXPAND_X = 1200;
+const INFINITE_EXPAND_Y = 900;
+const EMPTY_SELECTED_SET = new Set<string>();
 
 function clamp(n: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, n));
@@ -392,8 +106,6 @@ export default function Index() {
   const lastHandleTapMs = useRef<number>(0);
   const movedDuringDrag = useRef(false);
   const toolbarDragStart = useRef<{ x: number; y: number } | null>(null);
-  const pointerPageIndex = useRef<number | null>(null);
-  const ctrlWheelAccum = useRef(0);
 
   // Tool sizes (separate pen/eraser)
   const [penSizeIndex, setPenSizeIndex] = useState(0);
@@ -430,10 +142,34 @@ export default function Index() {
 
   // Zoom
   const [zoom, setZoom] = useState(1);
-  const clampZoom = (z: number) => Math.max(0.5, Math.min(2.5, z));
+  const clampZoom = useCallback(
+    (z: number) => Math.max(0.5, Math.min(2.5, z)),
+    [],
+  );
+  const quantizeZoom = useCallback((z: number) => Math.round(z * 100) / 100, []);
+  const zoomRef = useRef(1);
+  const workspaceRef = useRef<any>(null);
+  const wheelZoomRafRef = useRef<number | null>(null);
+  const wheelZoomAccumRef = useRef(0);
+  const wheelZoomFocusRef = useRef<{ x: number; y: number } | null>(null);
+  const [noteKind, setNoteKind] = useState<NoteKind>("page");
+  const [boardSize, setBoardSize] = useState<InfiniteBoard | null>(null);
+  const [boardBackgroundStyle, setBoardBackgroundStyle] =
+    useState<InfiniteBoardBackgroundStyle>("grid");
+  const canvasSize = useMemo(
+    () => boardSize ?? getCanvasSize(noteKind),
+    [boardSize, noteKind],
+  );
+  const isInfiniteCanvas = noteKind === "infinite";
+  const [isBoardBackgroundModalOpen, setIsBoardBackgroundModalOpen] =
+    useState(false);
+  const scrollContainerRef = useRef<any>(null);
+
+  useEffect(() => {
+    zoomRef.current = zoom;
+  }, [zoom]);
 
   // Strokes + current stroke
-  const [currentPath, setCurrentPath] = useState("");
   const {
     strokes,
     setStrokes,
@@ -458,35 +194,7 @@ export default function Index() {
   } = useEditorPageState({
     emptyBackground: EMPTY_PAGE_BACKGROUND,
   });
-
-  // Eraser cursor (outline)
-  const [eraserCursor, setEraserCursor] = useState<Point | null>(null);
-  const lastEraserPoint = useRef<Point | null>(null);
-  const eraserDidMutate = useRef(false);
-  const queuedEraserPoints = useRef<Point[]>([]);
-  const eraserRafId = useRef<number | null>(null);
-
-  // Lasso UI
-  const [lassoPath, setLassoPath] = useState("");
-  const lassoPoints = useRef<Point[]>([]);
-
-  // Selection
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
-
-  // Drawing refs
-  const isPointerDown = useRef(false);
-  const currentPoints = useRef<Point[]>([]);
-
-  // Move selection refs
-  const isMovingSelection = useRef(false);
-  const moveStart = useRef<Point | null>(null);
-  const moveBase = useRef<Map<string, { dx: number; dy: number }>>(new Map());
-  const moveDidMutate = useRef(false);
-
-  // rAF throttling
-  const rafId = useRef<number | null>(null);
-  const pending = useRef(false);
+  const canvasSizeRef = useRef(canvasSize);
 
   // ---- Toolbar constraints
   const clampToolbarPos = (x: number, y: number) => {
@@ -509,6 +217,10 @@ export default function Index() {
     toolbarSize.w,
     toolbarSize.h,
   ]);
+
+  useEffect(() => {
+    canvasSizeRef.current = canvasSize;
+  }, [canvasSize]);
 
   // ---- Toolbar drag handle PanResponder (drag only on 3-dot handle)
   const handlePanResponder = useMemo(() => {
@@ -550,19 +262,45 @@ export default function Index() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [containerSize.w, containerSize.h, toolbarSize.w, toolbarSize.h]);
 
-  const resetCanvasState = useCallback(() => {
-    isPointerDown.current = false;
-    currentPoints.current = [];
-    setCurrentPath("");
-    setSelectedIds([]);
-    setLassoPath("");
-    lassoPoints.current = [];
-    setEraserCursor(null);
-    lastEraserPoint.current = null;
-    isMovingSelection.current = false;
-    moveStart.current = null;
-    moveBase.current = new Map();
-  }, []);
+  const {
+    currentPath,
+    eraserCursor,
+    lassoPath,
+    selectedIds,
+    selectedSet,
+    isPointerDown,
+    pageHandlersByPage,
+    deleteSelection,
+    resetCanvasState,
+    handleSelectPage,
+    handleAddPageBelowCurrent,
+    handleRemoveCurrentPage,
+    clearPenModeArtifacts,
+    clearEraserModeArtifacts,
+    clearLassoModeArtifacts,
+  } = useCanvasInteractions({
+    tool,
+    pages,
+    strokesRef,
+    setStrokes,
+    pushHistory,
+    currentPageIndex,
+    selectPage,
+    addPageBelowCurrent,
+    removeCurrentPage,
+    activeWidthRef,
+    activeColorRef,
+    zoomRef,
+    canvasSizeRef,
+    isInfiniteCanvas,
+    setBoardSize,
+    minDistPx: MIN_DIST_PX,
+    minPointsToSave: MIN_POINTS_TO_SAVE,
+    strokeSmoothingAlpha: STROKE_SMOOTHING_ALPHA,
+    infiniteEdgeTrigger: INFINITE_EDGE_TRIGGER,
+    infiniteExpandX: INFINITE_EXPAND_X,
+    infiniteExpandY: INFINITE_EXPAND_Y,
+  });
 
   useNotePersistence({
     routeNoteId,
@@ -572,8 +310,14 @@ export default function Index() {
     pageBackgrounds,
     currentPageIndex,
     strokes,
+    noteKind,
+    boardSize,
+    boardBackgroundStyle,
     emptyBackground: EMPTY_PAGE_BACKGROUND,
     resetCanvasState,
+    setNoteKind,
+    setBoardSize,
+    setBoardBackgroundStyle,
     setPages,
     setPageBackgrounds,
     setCurrentPageIndex,
@@ -582,380 +326,111 @@ export default function Index() {
     setHistoryIndex,
   });
 
-  const getLocalPagePoint = (e: any): Point | null => {
-    const ne = e?.nativeEvent ?? {};
-    let lx: number | null = null;
-    let ly: number | null = null;
+  const applyZoomWithFocus = useCallback(
+    (targetZoom: number, focusX?: number, focusY?: number) => {
+      const nextZoom = clampZoom(targetZoom);
+      const container = scrollContainerRef.current as any;
+      const prevZoom = zoomRef.current;
 
-    if (Platform.OS === "web") {
-      const targetRect = e?.currentTarget?.getBoundingClientRect?.();
       if (
-        targetRect &&
-        typeof ne.clientX === "number" &&
-        typeof ne.clientY === "number"
+        !container ||
+        typeof container.scrollLeft !== "number" ||
+        typeof container.scrollTop !== "number" ||
+        focusX == null ||
+        focusY == null
       ) {
-        lx = ne.clientX - targetRect.left;
-        ly = ne.clientY - targetRect.top;
+        setZoom(nextZoom);
+        return;
       }
-    } else {
-      lx =
-        typeof ne.locationX === "number"
-          ? ne.locationX
-          : typeof ne.offsetX === "number"
-            ? ne.offsetX
-            : null;
-      ly =
-        typeof ne.locationY === "number"
-          ? ne.locationY
-          : typeof ne.offsetY === "number"
-            ? ne.offsetY
-            : null;
-    }
 
-    if (lx == null || ly == null) return null;
+      const contentX = (container.scrollLeft + focusX) / prevZoom;
+      const contentY = (container.scrollTop + focusY) / prevZoom;
 
-    const x = lx / zoom;
-    const y = ly / zoom;
-    if (x < 0 || y < 0 || x > PAGE_W || y > PAGE_H) return null;
-    return { x, y };
-  };
+      setZoom(nextZoom);
+
+      requestAnimationFrame(() => {
+        container.scrollLeft = contentX * nextZoom - focusX;
+        container.scrollTop = contentY * nextZoom - focusY;
+      });
+    },
+    [clampZoom],
+  );
 
   useEffect(() => {
     if (Platform.OS !== "web") return;
 
+    const workspaceEl = workspaceRef.current as any;
+    if (!workspaceEl?.addEventListener) return;
+
+    const flushWheelZoom = () => {
+      wheelZoomRafRef.current = null;
+      const dy = wheelZoomAccumRef.current;
+      const focus = wheelZoomFocusRef.current;
+      wheelZoomAccumRef.current = 0;
+
+      if (!Number.isFinite(dy) || dy === 0) return;
+
+      applyZoomWithFocus(
+        zoomRef.current * Math.exp((-dy * 0.0052)),
+        focus?.x,
+        focus?.y,
+      );
+    };
+
     const onWheel = (ev: WheelEvent) => {
       if (!ev.ctrlKey) return;
 
-      // Stop browser/page zoom so only note-page zoom changes.
       ev.preventDefault();
 
       const dy = Number(ev.deltaY ?? 0);
       if (!Number.isFinite(dy) || dy === 0) return;
 
-      ctrlWheelAccum.current += dy;
-      const stepTrigger = 48;
+      const rect = workspaceEl.getBoundingClientRect?.();
+      if (
+        rect &&
+        typeof ev.clientX === "number" &&
+        typeof ev.clientY === "number"
+      ) {
+        wheelZoomFocusRef.current = {
+          x: ev.clientX - rect.left,
+          y: ev.clientY - rect.top,
+        };
+      }
 
-      while (ctrlWheelAccum.current <= -stepTrigger) {
-        setZoom((z) => clampZoom(z + 0.1));
-        ctrlWheelAccum.current += stepTrigger;
-      }
-      while (ctrlWheelAccum.current >= stepTrigger) {
-        setZoom((z) => clampZoom(z - 0.1));
-        ctrlWheelAccum.current -= stepTrigger;
-      }
+      wheelZoomAccumRef.current += dy;
+
+      if (wheelZoomRafRef.current != null) return;
+      wheelZoomRafRef.current = requestAnimationFrame(flushWheelZoom);
     };
 
-    window.addEventListener("wheel", onWheel, { passive: false });
+    workspaceEl.addEventListener("wheel", onWheel, { passive: false });
+
     return () => {
-      window.removeEventListener("wheel", onWheel as any);
+      workspaceEl.removeEventListener("wheel", onWheel);
+      if (wheelZoomRafRef.current != null) {
+        cancelAnimationFrame(wheelZoomRafRef.current);
+        wheelZoomRafRef.current = null;
+      }
+      wheelZoomAccumRef.current = 0;
+      wheelZoomFocusRef.current = null;
     };
-  }, []);
+  }, [applyZoomWithFocus]);
 
-  const recomputePath = () => {
-    if (pending.current) return;
-
-    if (typeof requestAnimationFrame !== "function") {
-      setCurrentPath(pointsToSmoothPath(currentPoints.current));
-      return;
-    }
-
-    pending.current = true;
-    rafId.current = requestAnimationFrame(() => {
-      pending.current = false;
-      setCurrentPath(pointsToSmoothPath(currentPoints.current));
-    });
-  };
-
-  const startStroke = (p: Point) => {
-    currentPoints.current = [p];
-    recomputePath();
-  };
-
-  const extendStroke = (p: Point) => {
-    const pts = currentPoints.current;
-    const last = pts[pts.length - 1];
-
-    if (!last) {
-      pts.push(p);
-      recomputePath();
-      return;
-    }
-
-    if (dist(last, p) < MIN_DIST_PX) return;
-
-    const smoothed = smoothTowards(last, p, STROKE_SMOOTHING_ALPHA);
-    const segmentLen = dist(last, smoothed);
-    const segmentStep = Math.max(1, MIN_DIST_PX * 0.75);
-    const steps = Math.max(1, Math.ceil(segmentLen / segmentStep));
-
-    for (let i = 1; i <= steps; i++) {
-      pts.push(lerpPoint(last, smoothed, i / steps));
-    }
-
-    recomputePath();
-  };
-
-  const endStroke = () => {
-    if (rafId.current != null) {
-      cancelAnimationFrame(rafId.current);
-      rafId.current = null;
-      pending.current = false;
-    }
-
-    if (currentPoints.current.length < MIN_POINTS_TO_SAVE) {
-      currentPoints.current = [];
-      setCurrentPath("");
-      return;
-    }
-
-    const pts = currentPoints.current;
-    const d = pointsToSmoothPath(pts);
-    const bbox = computeBBox(pts);
-
-    if (d.trim().length > 0) {
-      const stroke: Stroke = {
-        id: uid(),
-        points: pts.slice(),
-        d,
-        w: activeWidthRef.current,
-        c: activeColorRef.current,
-        dx: 0,
-        dy: 0,
-        bbox,
-      };
-      setStrokes((prev) => {
-        const updated = [...prev, stroke];
-        pushHistory(updated);
-        return updated;
-      });
-    }
-
-    currentPoints.current = [];
-    setCurrentPath("");
-  };
-
-  const cancelStroke = () => {
-    if (rafId.current != null) {
-      cancelAnimationFrame(rafId.current);
-      rafId.current = null;
-      pending.current = false;
-    }
-    currentPoints.current = [];
-    setCurrentPath("");
-  };
-
-  const eraseAtPoints = (points: Point[]) => {
-    if (points.length === 0) return;
-    const radius = activeWidthRef.current / 2;
-
-    setStrokes((prev) => {
-      let changed = false;
-      const out: Stroke[] = [];
-
-      for (const s of prev) {
-        const replaced = splitStrokeByEraserPathPoints(s, points, radius);
-        if (replaced === null) out.push(s);
-        else {
-          changed = true;
-          out.push(...replaced);
-        }
-      }
-
-      if (changed) eraserDidMutate.current = true;
-      return changed ? out : prev;
-    });
-  };
-
-  const flushQueuedEraser = () => {
-    if (eraserRafId.current != null) {
-      cancelAnimationFrame(eraserRafId.current);
-      eraserRafId.current = null;
-    }
-
-    if (queuedEraserPoints.current.length === 0) return;
-    const points = queuedEraserPoints.current.slice();
-    queuedEraserPoints.current = [];
-    eraseAtPoints(points);
-  };
-
-  const queueEraserPoints = (points: Point[]) => {
-    if (points.length === 0) return;
-    queuedEraserPoints.current.push(...points);
-
-    if (eraserRafId.current != null) return;
-    if (typeof requestAnimationFrame !== "function") {
-      flushQueuedEraser();
-      return;
-    }
-
-    eraserRafId.current = requestAnimationFrame(() => {
-      eraserRafId.current = null;
-      flushQueuedEraser();
-    });
-  };
-
-  const eraseAtPoint = (p: Point) => {
-    queueEraserPoints([p]);
-  };
-
-  // Make eraser continuous between pointer events (precision without jagginess)
-  const eraseAlongSegment = (from: Point, to: Point) => {
-    const radius = activeWidthRef.current / 2;
-    const step = Math.max(1.25, radius * 0.22);
-
-    const d = dist(from, to);
-    if (d <= step) {
-      eraseAtPoint(to);
-      return;
-    }
-
-    const n = Math.ceil(d / step);
-    const samples: Point[] = [];
-    for (let i = 1; i <= n; i++) {
-      const t = i / n;
-      samples.push({
-        x: from.x + (to.x - from.x) * t,
-        y: from.y + (to.y - from.y) * t,
-      });
-    }
-    queueEraserPoints(samples);
-  };
-
-  const lassoToPath = (pts: Point[]) => {
-    if (pts.length === 0) return "";
-    let d = `M ${pts[0].x} ${pts[0].y} `;
-    for (let i = 1; i < pts.length; i++) d += `L ${pts[i].x} ${pts[i].y} `;
-    d += "Z";
-    return d;
-  };
-
-  const startLasso = (p: Point) => {
-    lassoPoints.current = [p];
-    setLassoPath(lassoToPath(lassoPoints.current));
-  };
-
-  const extendLasso = (p: Point) => {
-    const pts = lassoPoints.current;
-    const last = pts[pts.length - 1];
-    if (last && dist(last, p) < 3) return;
-    pts.push(p);
-    setLassoPath(lassoToPath(pts));
-  };
-
-  const finishLassoAndSelect = () => {
-    const poly = lassoPoints.current;
-    if (poly.length < 3) {
-      setLassoPath("");
-      lassoPoints.current = [];
-      return;
-    }
-
-    const pb = computeBBox(poly);
-
-    const hits: string[] = [];
-    for (const s of strokes) {
-      const sb = {
-        minX: s.bbox.minX + s.dx,
-        minY: s.bbox.minY + s.dy,
-        maxX: s.bbox.maxX + s.dx,
-        maxY: s.bbox.maxY + s.dy,
-      };
-      if (!bboxOverlap(sb, pb)) continue;
-
-      let inside = false;
-      for (let i = 0; i < s.points.length; i += 2) {
-        const p = s.points[i];
-        const tp = { x: p.x + s.dx, y: p.y + s.dy };
-        if (pointInPoly(tp, poly)) {
-          inside = true;
-          break;
-        }
-      }
-      if (inside) hits.push(s.id);
-    }
-
-    setSelectedIds(hits);
-    setLassoPath("");
-    lassoPoints.current = [];
-  };
-
-  const startMoveSelection = (p: Point) => {
-    if (selectedIds.length === 0) return;
-    isMovingSelection.current = true;
-    moveStart.current = p;
-    moveDidMutate.current = false;
-    const base = new Map<string, { dx: number; dy: number }>();
-    for (const s of strokes) {
-      if (selectedSet.has(s.id)) base.set(s.id, { dx: s.dx, dy: s.dy });
-    }
-    moveBase.current = base;
-  };
-
-  const moveSelectionTo = (p: Point) => {
-    if (!isMovingSelection.current || !moveStart.current) return;
-    const dx = p.x - moveStart.current.x;
-    const dy = p.y - moveStart.current.y;
-    if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01)
-      moveDidMutate.current = true;
-
-    setStrokes((prev) =>
-      prev.map((s) => {
-        if (!selectedSet.has(s.id)) return s;
-        const b = moveBase.current.get(s.id);
-        if (!b) return s;
-        return { ...s, dx: b.dx + dx, dy: b.dy + dy };
-      }),
-    );
-  };
-
-  const endMoveSelection = () => {
-    if (isMovingSelection.current && moveDidMutate.current) {
-      pushHistory(strokesRef.current);
-    }
-    isMovingSelection.current = false;
-    moveStart.current = null;
-    moveBase.current = new Map();
-    moveDidMutate.current = false;
-  };
-
-  const deleteSelection = () => {
-    if (selectedIds.length === 0) return;
-    setStrokes((prev) => {
-      const updated = prev.filter((s) => !selectedSet.has(s.id));
-      pushHistory(updated);
-      return updated;
-    });
-    setSelectedIds([]);
-  };
-
-  const resetForPageSwitch = () => {
-    isPointerDown.current = false;
-    cancelStroke();
-    flushQueuedEraser();
-    setSelectedIds([]);
-    setLassoPath("");
-    lassoPoints.current = [];
-    setEraserCursor(null);
-    lastEraserPoint.current = null;
-    eraserDidMutate.current = false;
-    queuedEraserPoints.current = [];
-    isMovingSelection.current = false;
-    moveStart.current = null;
-    moveBase.current = new Map();
-    moveDidMutate.current = false;
-  };
-
-  const handleSelectPage = (index: number) => {
-    selectPage(index, resetForPageSwitch);
-  };
-
-  const handleAddPageBelowCurrent = () => {
-    addPageBelowCurrent(resetForPageSwitch);
-  };
-
-  const handleRemoveCurrentPage = () => {
-    removeCurrentPage(resetForPageSwitch);
-  };
+  const animateZoomTo = useCallback(
+    (targetZoom: number) => {
+      const container = scrollContainerRef.current as any;
+      const focusX =
+        container && typeof container.clientWidth === "number"
+          ? container.clientWidth / 2
+          : undefined;
+      const focusY =
+        container && typeof container.clientHeight === "number"
+          ? container.clientHeight / 2
+          : undefined;
+      applyZoomWithFocus(clampZoom(quantizeZoom(targetZoom)), focusX, focusY);
+    },
+    [applyZoomWithFocus, clampZoom, quantizeZoom],
+  );
 
   const exportAsPdf = () => {
     exportNoteAsPdf({
@@ -963,215 +438,11 @@ export default function Index() {
       pageBackgrounds,
       currentPageIndex,
       activePageStrokes: strokes,
+      noteKind,
+      pageWidth: canvasSize.width,
+      pageHeight: canvasSize.height,
     });
   };
-
-  // Intentionally memoized around state that changes handler behavior. This avoids
-  // recreating page handler objects during render-only updates like currentPath.
-  const pageHandlersByPage = useMemo(
-    () =>
-      pages.map((_, pageIndex) => {
-        if (Platform.OS === "web") {
-          return {
-            onPointerDown: (e: any) => {
-              if (
-                e?.nativeEvent?.button != null &&
-                e.nativeEvent.button !== 0
-              ) {
-                return;
-              }
-
-              e?.preventDefault?.();
-              e?.stopPropagation?.();
-
-              const p = getLocalPagePoint(e);
-              if (!p) {
-                if (tool === "lasso") setSelectedIds([]);
-                return;
-              }
-
-              if (pageIndex !== currentPageIndex) handleSelectPage(pageIndex);
-
-              pointerPageIndex.current = pageIndex;
-              isPointerDown.current = true;
-              e?.nativeEvent?.target?.setPointerCapture?.(
-                e.nativeEvent.pointerId,
-              );
-
-              if (tool === "lasso") {
-                if (selectedIds.length > 0) startMoveSelection(p);
-                else startLasso(p);
-                return;
-              }
-
-              if (tool === "eraser") {
-                setEraserCursor(p);
-                eraserDidMutate.current = false;
-                lastEraserPoint.current = p;
-                eraseAtPoint(p);
-                return;
-              }
-
-              startStroke(p);
-            },
-            onPointerMove: (e: any) => {
-              if (!isPointerDown.current) return;
-              if (pointerPageIndex.current !== pageIndex) return;
-              e?.preventDefault?.();
-
-              const p = getLocalPagePoint(e);
-              if (!p) return;
-
-              if (tool === "lasso") {
-                if (isMovingSelection.current) moveSelectionTo(p);
-                else extendLasso(p);
-                return;
-              }
-
-              if (tool === "eraser") {
-                setEraserCursor(p);
-                const prev = lastEraserPoint.current;
-                if (prev) eraseAlongSegment(prev, p);
-                else eraseAtPoint(p);
-                lastEraserPoint.current = p;
-                return;
-              }
-
-              extendStroke(p);
-            },
-            onPointerUp: (e: any) => {
-              if (!isPointerDown.current) return;
-              if (pointerPageIndex.current !== pageIndex) return;
-              e?.preventDefault?.();
-
-              isPointerDown.current = false;
-              pointerPageIndex.current = null;
-
-              if (tool === "eraser") {
-                flushQueuedEraser();
-                if (eraserDidMutate.current) pushHistory(strokesRef.current);
-                setEraserCursor(null);
-                lastEraserPoint.current = null;
-                eraserDidMutate.current = false;
-                return;
-              }
-
-              if (tool === "lasso") {
-                if (isMovingSelection.current) endMoveSelection();
-                else finishLassoAndSelect();
-                return;
-              }
-
-              endStroke();
-            },
-            onPointerCancel: () => {
-              if (!isPointerDown.current) return;
-              if (pointerPageIndex.current !== pageIndex) return;
-              isPointerDown.current = false;
-              pointerPageIndex.current = null;
-              flushQueuedEraser();
-              setEraserCursor(null);
-              lastEraserPoint.current = null;
-              eraserDidMutate.current = false;
-              endMoveSelection();
-              setLassoPath("");
-              lassoPoints.current = [];
-              cancelStroke();
-            },
-          } as any;
-        }
-
-        return {
-          onStartShouldSetResponder: () => true,
-          onMoveShouldSetResponder: () => true,
-
-          onResponderGrant: (e: any) => {
-            const p = getLocalPagePoint(e);
-            if (!p) return;
-
-            if (pageIndex !== currentPageIndex) handleSelectPage(pageIndex);
-
-            isPointerDown.current = true;
-            pointerPageIndex.current = pageIndex;
-
-            if (tool === "lasso") {
-              if (selectedIds.length > 0) startMoveSelection(p);
-              else startLasso(p);
-              return;
-            }
-
-            if (tool === "eraser") {
-              setEraserCursor(p);
-              eraserDidMutate.current = false;
-              lastEraserPoint.current = p;
-              eraseAtPoint(p);
-              return;
-            }
-
-            startStroke(p);
-          },
-
-          onResponderMove: (e: any) => {
-            if (!isPointerDown.current) return;
-            if (pointerPageIndex.current !== pageIndex) return;
-            const p = getLocalPagePoint(e);
-            if (!p) return;
-
-            if (tool === "lasso") {
-              if (isMovingSelection.current) moveSelectionTo(p);
-              else extendLasso(p);
-              return;
-            }
-
-            if (tool === "eraser") {
-              setEraserCursor(p);
-              const prev = lastEraserPoint.current;
-              if (prev) eraseAlongSegment(prev, p);
-              else eraseAtPoint(p);
-              lastEraserPoint.current = p;
-              return;
-            }
-
-            extendStroke(p);
-          },
-
-          onResponderRelease: () => {
-            if (!isPointerDown.current) return;
-            if (pointerPageIndex.current !== pageIndex) return;
-            isPointerDown.current = false;
-            pointerPageIndex.current = null;
-
-            if (tool === "eraser") {
-              flushQueuedEraser();
-              if (eraserDidMutate.current) pushHistory(strokesRef.current);
-              setEraserCursor(null);
-              lastEraserPoint.current = null;
-              eraserDidMutate.current = false;
-              return;
-            }
-
-            if (tool === "lasso") {
-              if (isMovingSelection.current) endMoveSelection();
-              else finishLassoAndSelect();
-              return;
-            }
-
-            endStroke();
-          },
-          onResponderTerminate: () => {
-            if (!isPointerDown.current) return;
-            if (pointerPageIndex.current !== pageIndex) return;
-            isPointerDown.current = false;
-            pointerPageIndex.current = null;
-            flushQueuedEraser();
-            if (tool === "eraser") eraserDidMutate.current = false;
-            cancelStroke();
-          },
-        };
-      }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [pages, tool, selectedIds, currentPageIndex, zoom, strokes, selectedSet],
-  );
 
   return (
     <View
@@ -1222,8 +493,13 @@ export default function Index() {
         toolbarOrientation={toolbarOrientation}
         penColor={penColor}
         tool={tool}
-        currentPageIndex={currentPageIndex}
-        pageCount={pages.length}
+        navLabel={isInfiniteCanvas ? "Board" : "Pages"}
+        navSubLabel={
+          isInfiniteCanvas
+            ? boardBackgroundStyle[0].toUpperCase() +
+              boardBackgroundStyle.slice(1)
+            : `${currentPageIndex + 1}/${Math.max(1, pages.length)}`
+        }
         selectedCount={selectedIds.length}
         zoom={zoom}
         historyIndex={historyIndex}
@@ -1241,10 +517,7 @@ export default function Index() {
             setIsSizeModalOpen(true);
           } else {
             setTool("pen");
-            setSelectedIds([]);
-            setLassoPath("");
-            setEraserCursor(null);
-            lastEraserPoint.current = null;
+            clearPenModeArtifacts();
           }
           lastPenTapMs.current = now;
         }}
@@ -1256,31 +529,32 @@ export default function Index() {
             setIsSizeModalOpen(true);
           } else {
             setTool("eraser");
-            setSelectedIds([]);
-            setLassoPath("");
+            clearEraserModeArtifacts();
           }
           lastEraserTapMs.current = now;
         }}
         onLassoPress={() => {
           setTool("lasso");
-          setLassoPath("");
-          lassoPoints.current = [];
-          setEraserCursor(null);
-          lastEraserPoint.current = null;
+          clearLassoModeArtifacts();
         }}
         onColorPress={() => setIsColorModalOpen(true)}
-        onPagesPress={() => setIsPagesModalOpen(true)}
+        onPagesPress={() =>
+          isInfiniteCanvas
+            ? setIsBoardBackgroundModalOpen(true)
+            : setIsPagesModalOpen(true)
+        }
         onExportPdf={exportAsPdf}
         onDeleteSelection={deleteSelection}
-        onZoomOut={() => setZoom((z) => clampZoom(z - 0.1))}
-        onZoomReset={() => setZoom(1)}
-        onZoomIn={() => setZoom((z) => clampZoom(z + 0.1))}
+        onZoomOut={() => animateZoomTo(zoom - 0.01)}
+        onZoomReset={() => animateZoomTo(1)}
+        onZoomIn={() => animateZoomTo(zoom + 0.01)}
         onUndo={undo}
         onRedo={redo}
       />
 
-      {/* Workspace: stacked physical pages */}
+      {/* Workspace */}
       <View
+        ref={scrollContainerRef}
         style={
           Platform.OS === "web"
             ? ({
@@ -1292,6 +566,7 @@ export default function Index() {
         }
       >
         <View
+          ref={workspaceRef}
           style={
             Platform.OS === "web"
               ? ({
@@ -1300,14 +575,14 @@ export default function Index() {
                   padding: 24,
                   display: "flex",
                   justifyContent: "flex-start",
-                  alignItems: "center",
+                  alignItems: isInfiniteCanvas ? "flex-start" : "center",
                   gap: 26,
                 } as any)
               : {
                   minHeight: "100%",
                   padding: 24,
                   justifyContent: "flex-start",
-                  alignItems: "center",
+                  alignItems: isInfiniteCanvas ? "flex-start" : "center",
                   gap: 26,
                 }
           }
@@ -1324,15 +599,19 @@ export default function Index() {
                 zoom={zoom}
                 pageIndex={pageIndex}
                 pageIsActive={pageIsActive}
+                noteKind={noteKind}
+                pageWidth={canvasSize.width}
+                pageHeight={canvasSize.height}
+                boardBackgroundStyle={boardBackgroundStyle}
                 pageBackground={pageBackground}
                 renderStrokes={renderStrokes}
-                selectedSet={selectedSet}
-                currentPath={currentPath}
+                selectedSet={pageIsActive ? selectedSet : EMPTY_SELECTED_SET}
+                currentPath={pageIsActive ? currentPath : ""}
                 activeColor={activeColor}
                 activeWidth={activeWidth}
-                lassoPath={lassoPath}
+                lassoPath={pageIsActive ? lassoPath : ""}
                 tool={tool}
-                eraserCursor={eraserCursor}
+                eraserCursor={pageIsActive ? eraserCursor : null}
                 eraserRadius={eraserRadius}
                 pageHandlers={pageHandlersByPage[pageIndex]}
               />
@@ -1353,15 +632,30 @@ export default function Index() {
       />
 
       {/* Pages modal */}
-      <PagesModal
-        visible={isPagesModalOpen}
-        pages={pages}
-        currentPageIndex={currentPageIndex}
-        onClose={() => setIsPagesModalOpen(false)}
-        onAddPage={handleAddPageBelowCurrent}
-        onRemovePage={handleRemoveCurrentPage}
-        onSelectPage={handleSelectPage}
-        onMovePage={movePage}
+      {!isInfiniteCanvas ? (
+        <PagesModal
+          visible={isPagesModalOpen}
+          pages={pages}
+          currentPageIndex={currentPageIndex}
+          onClose={() => setIsPagesModalOpen(false)}
+          onAddPage={handleAddPageBelowCurrent}
+          onRemovePage={handleRemoveCurrentPage}
+          onSelectPage={handleSelectPage}
+          onMovePage={movePage}
+        />
+      ) : null}
+
+      <BoardBackgroundModal
+        visible={isBoardBackgroundModalOpen}
+        value={boardBackgroundStyle}
+        onClose={() => setIsBoardBackgroundModalOpen(false)}
+        onSelect={(value) => {
+          setBoardBackgroundStyle(value);
+          setBoardSize((prev) =>
+            prev ? { ...prev, backgroundStyle: value } : prev,
+          );
+          setIsBoardBackgroundModalOpen(false);
+        }}
       />
 
       {/* Size modal */}

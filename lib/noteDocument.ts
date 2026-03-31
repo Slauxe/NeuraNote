@@ -1,3 +1,11 @@
+export type NoteKind = "page" | "infinite";
+export type InfiniteBoardBackgroundStyle = "grid" | "dots" | "blank";
+export type InfiniteBoard = {
+  width: number;
+  height: number;
+  backgroundStyle?: InfiniteBoardBackgroundStyle;
+};
+
 export type NotePage = {
   id?: string;
   strokes: unknown[];
@@ -7,13 +15,16 @@ export type NotePage = {
 };
 
 export type NoteDoc = {
+  kind?: NoteKind;
+  board?: InfiniteBoard;
   strokes: unknown[];
   pages?: NotePage[];
   currentPageIndex?: number;
 };
 
-export function createEmptyNoteDoc(): NoteDoc {
+export function createEmptyNoteDoc(kind: NoteKind = "page"): NoteDoc {
   return {
+    kind,
     strokes: [],
     pages: [{ id: "page-1", strokes: [] }],
     currentPageIndex: 0,

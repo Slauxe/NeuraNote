@@ -1,155 +1,285 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Platform } from "react-native";
 
+import {
+  bboxOverlap,
+  computeBBox,
+  dist,
+  getCanvasSize,
+  lerpPoint,
+  pointInPoly,
+  pointsToSmoothPath,
+  smoothTowards,
+  splitStrokeByEraserPathPoints,
+  uid,
+} from "@/lib/editorGeometry";
 import type { Point, Stroke } from "@/lib/editorTypes";
+import type { InfiniteBoard } from "@/lib/noteDocument";
 
 type Tool = "pen" | "eraser" | "lasso";
 
 type UseCanvasInteractionsArgs = {
   tool: Tool;
-  zoom: number;
   pages: Stroke[][];
-  strokes: Stroke[];
-  currentPageIndex: number;
-  pageWidth: number;
-  pageHeight: number;
-  minDistPx: number;
-  minPointsToSave: number;
-  strokeSmoothingAlpha: number;
-  activeWidthRef: React.RefObject<number>;
-  activeColorRef: React.RefObject<string>;
   strokesRef: React.RefObject<Stroke[]>;
   setStrokes: React.Dispatch<React.SetStateAction<Stroke[]>>;
   pushHistory: (newStrokes: Stroke[]) => void;
+  currentPageIndex: number;
   selectPage: (index: number, beforeSwitch: () => void) => void;
   addPageBelowCurrent: (beforeSwitch: () => void) => void;
   removeCurrentPage: (beforeSwitch: () => void) => void;
-  pointsToSmoothPath: (points: Point[]) => string;
-  computeBBox: (points: Point[]) => {
-    minX: number;
-    minY: number;
-    maxX: number;
-    maxY: number;
-  };
-  splitStrokeByEraserPathPoints: (
-    stroke: Stroke,
-    centers: Point[],
-    radius: number,
-  ) => Stroke[] | null;
-  dist: (a: Point, b: Point) => number;
-  smoothTowards: (prev: Point, next: Point, alpha: number) => Point;
-  lerpPoint: (a: Point, b: Point, t: number) => Point;
-  pointInPoly: (pt: Point, poly: Point[]) => boolean;
-  bboxOverlap: (
-    a: { minX: number; minY: number; maxX: number; maxY: number },
-    b: { minX: number; minY: number; maxX: number; maxY: number },
-  ) => boolean;
-  uid: () => string;
+  activeWidthRef: React.RefObject<number>;
+  activeColorRef: React.RefObject<string>;
+  zoomRef: React.RefObject<number>;
+  canvasSizeRef: React.RefObject<{ width: number; height: number }>;
+  isInfiniteCanvas: boolean;
+  setBoardSize: React.Dispatch<React.SetStateAction<InfiniteBoard | null>>;
+  minDistPx: number;
+  minPointsToSave: number;
+  strokeSmoothingAlpha: number;
+  infiniteEdgeTrigger: number;
+  infiniteExpandX: number;
+  infiniteExpandY: number;
 };
+
+const EMPTY_SELECTION = new Set<string>();
 
 export function useCanvasInteractions({
   tool,
-  zoom,
   pages,
-  strokes,
-  currentPageIndex,
-  pageWidth,
-  pageHeight,
-  minDistPx,
-  minPointsToSave,
-  strokeSmoothingAlpha,
-  activeWidthRef,
-  activeColorRef,
   strokesRef,
   setStrokes,
   pushHistory,
+  currentPageIndex,
   selectPage,
   addPageBelowCurrent,
   removeCurrentPage,
-  pointsToSmoothPath,
-  computeBBox,
-  splitStrokeByEraserPathPoints,
-  dist,
-  smoothTowards,
-  lerpPoint,
-  pointInPoly,
-  bboxOverlap,
-  uid,
+  activeWidthRef,
+  activeColorRef,
+  zoomRef,
+  canvasSizeRef,
+  isInfiniteCanvas,
+  setBoardSize,
+  minDistPx,
+  minPointsToSave,
+  strokeSmoothingAlpha,
+  infiniteEdgeTrigger,
+  infiniteExpandX,
+  infiniteExpandY,
 }: UseCanvasInteractionsArgs) {
   const [currentPath, setCurrentPath] = useState("");
   const [eraserCursor, setEraserCursor] = useState<Point | null>(null);
   const [lassoPath, setLassoPath] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const selectedSet = useMemo(
+    () => (selectedIds.length > 0 ? new Set(selectedIds) : EMPTY_SELECTION),
+    [selectedIds],
+  );
+
+  const toolRef = useRef(tool);
+  const currentPageIndexRef = useRef(currentPageIndex);
+  const selectedIdsRef = useRef(selectedIds);
+  const selectedSetRef = useRef(selectedSet);
+  const isInfiniteCanvasRef = useRef(isInfiniteCanvas);
+
+  const isPointerDown = useRef(false);
+  const pointerPageIndex = useRef<number | null>(null);
+  const currentPoints = useRef<Point[]>([]);
+  const currentPathDraft = useRef("");
+  const rafId = useRef<number | null>(null);
+  const pending = useRef(false);
 
   const lastEraserPoint = useRef<Point | null>(null);
   const eraserDidMutate = useRef(false);
   const queuedEraserPoints = useRef<Point[]>([]);
   const eraserRafId = useRef<number | null>(null);
-  const isPointerDown = useRef(false);
-  const currentPoints = useRef<Point[]>([]);
+  const eraserCursorDraft = useRef<Point | null>(null);
+  const eraserCursorRenderRaf = useRef<number | null>(null);
+  const eraserCursorPending = useRef(false);
+
   const lassoPoints = useRef<Point[]>([]);
+  const lassoPathDraft = useRef("");
+  const lassoRenderRaf = useRef<number | null>(null);
+  const lassoPending = useRef(false);
+
   const isMovingSelection = useRef(false);
   const moveStart = useRef<Point | null>(null);
   const moveBase = useRef<Map<string, { dx: number; dy: number }>>(new Map());
   const moveDidMutate = useRef(false);
-  const pointerPageIndex = useRef<number | null>(null);
-  const rafId = useRef<number | null>(null);
-  const pending = useRef(false);
+
+  useEffect(() => {
+    toolRef.current = tool;
+  }, [tool]);
+
+  useEffect(() => {
+    currentPageIndexRef.current = currentPageIndex;
+  }, [currentPageIndex]);
+
+  useEffect(() => {
+    selectedIdsRef.current = selectedIds;
+    selectedSetRef.current = selectedSet;
+  }, [selectedIds, selectedSet]);
+
+  useEffect(() => {
+    isInfiniteCanvasRef.current = isInfiniteCanvas;
+  }, [isInfiniteCanvas]);
+
+  const ensureInfiniteCanvasRoom = useCallback(
+    (point: Point) => {
+      if (!isInfiniteCanvasRef.current) return;
+
+      setBoardSize((prev) => {
+        const current = prev ?? getCanvasSize("infinite");
+        let nextWidth = current.width;
+        let nextHeight = current.height;
+
+        if (point.x >= current.width - infiniteEdgeTrigger) {
+          nextWidth = Math.max(
+            current.width + infiniteExpandX,
+            Math.ceil(point.x + infiniteEdgeTrigger),
+          );
+        }
+        if (point.y >= current.height - infiniteEdgeTrigger) {
+          nextHeight = Math.max(
+            current.height + infiniteExpandY,
+            Math.ceil(point.y + infiniteEdgeTrigger),
+          );
+        }
+
+        if (nextWidth === current.width && nextHeight === current.height) {
+          return current;
+        }
+
+        return {
+          ...current,
+          width: nextWidth,
+          height: nextHeight,
+        };
+      });
+    },
+    [infiniteEdgeTrigger, infiniteExpandX, infiniteExpandY, setBoardSize],
+  );
 
   const recomputePath = useCallback(() => {
     if (pending.current) return;
 
     if (typeof requestAnimationFrame !== "function") {
-      setCurrentPath(pointsToSmoothPath(currentPoints.current));
+      setCurrentPath(currentPathDraft.current);
       return;
     }
 
     pending.current = true;
     rafId.current = requestAnimationFrame(() => {
       pending.current = false;
-      setCurrentPath(pointsToSmoothPath(currentPoints.current));
+      setCurrentPath(currentPathDraft.current);
     });
-  }, [pointsToSmoothPath]);
+  }, []);
+
+  const commitEraserCursor = useCallback((point: Point | null, immediate = false) => {
+    eraserCursorDraft.current = point;
+
+    if (immediate) {
+      if (eraserCursorRenderRaf.current != null) {
+        cancelAnimationFrame(eraserCursorRenderRaf.current);
+        eraserCursorRenderRaf.current = null;
+      }
+      eraserCursorPending.current = false;
+      setEraserCursor(point);
+      return;
+    }
+
+    if (eraserCursorPending.current) return;
+    if (typeof requestAnimationFrame !== "function") {
+      setEraserCursor(point);
+      return;
+    }
+
+    eraserCursorPending.current = true;
+    eraserCursorRenderRaf.current = requestAnimationFrame(() => {
+      eraserCursorPending.current = false;
+      eraserCursorRenderRaf.current = null;
+      setEraserCursor(eraserCursorDraft.current);
+    });
+  }, []);
+
+  const commitLassoPath = useCallback((path: string, immediate = false) => {
+    lassoPathDraft.current = path;
+
+    if (immediate) {
+      if (lassoRenderRaf.current != null) {
+        cancelAnimationFrame(lassoRenderRaf.current);
+        lassoRenderRaf.current = null;
+      }
+      lassoPending.current = false;
+      setLassoPath(path);
+      return;
+    }
+
+    if (lassoPending.current) return;
+    if (typeof requestAnimationFrame !== "function") {
+      setLassoPath(path);
+      return;
+    }
+
+    lassoPending.current = true;
+    lassoRenderRaf.current = requestAnimationFrame(() => {
+      lassoPending.current = false;
+      lassoRenderRaf.current = null;
+      setLassoPath(lassoPathDraft.current);
+    });
+  }, []);
+
+  const startDraftPath = useCallback((point: Point) => {
+    currentPathDraft.current = `M ${point.x} ${point.y} L ${point.x + 0.01} ${point.y + 0.01}`;
+  }, []);
+
+  const appendDraftPathPoint = useCallback((point: Point) => {
+    currentPathDraft.current += ` L ${point.x} ${point.y}`;
+  }, []);
 
   const startStroke = useCallback(
-    (p: Point) => {
-      currentPoints.current = [p];
-      recomputePath();
+    (point: Point) => {
+      ensureInfiniteCanvasRoom(point);
+      currentPoints.current = [point];
+      startDraftPath(point);
+      setCurrentPath(currentPathDraft.current);
     },
-    [recomputePath],
+    [ensureInfiniteCanvasRoom, startDraftPath],
   );
 
   const extendStroke = useCallback(
-    (p: Point) => {
-      const pts = currentPoints.current;
-      const last = pts[pts.length - 1];
+    (point: Point) => {
+      ensureInfiniteCanvasRoom(point);
+      const points = currentPoints.current;
+      const last = points[points.length - 1];
 
       if (!last) {
-        pts.push(p);
+        points.push(point);
+        appendDraftPathPoint(point);
         recomputePath();
         return;
       }
 
-      if (dist(last, p) < minDistPx) return;
+      if (dist(last, point) < minDistPx) return;
 
-      const smoothed = smoothTowards(last, p, strokeSmoothingAlpha);
-      const segmentLen = dist(last, smoothed);
+      const smoothed = smoothTowards(last, point, strokeSmoothingAlpha);
+      const segmentLength = dist(last, smoothed);
       const segmentStep = Math.max(1, minDistPx * 0.75);
-      const steps = Math.max(1, Math.ceil(segmentLen / segmentStep));
+      const steps = Math.max(1, Math.ceil(segmentLength / segmentStep));
 
       for (let i = 1; i <= steps; i++) {
-        pts.push(lerpPoint(last, smoothed, i / steps));
+        const nextPoint = lerpPoint(last, smoothed, i / steps);
+        points.push(nextPoint);
+        appendDraftPathPoint(nextPoint);
       }
 
       recomputePath();
     },
     [
-      dist,
-      lerpPoint,
+      appendDraftPathPoint,
+      ensureInfiniteCanvasRoom,
       minDistPx,
       recomputePath,
-      smoothTowards,
       strokeSmoothingAlpha,
     ],
   );
@@ -163,18 +293,19 @@ export function useCanvasInteractions({
 
     if (currentPoints.current.length < minPointsToSave) {
       currentPoints.current = [];
+      currentPathDraft.current = "";
       setCurrentPath("");
       return;
     }
 
-    const pts = currentPoints.current;
-    const d = pointsToSmoothPath(pts);
-    const bbox = computeBBox(pts);
+    const points = currentPoints.current;
+    const d = pointsToSmoothPath(points);
+    const bbox = computeBBox(points);
 
     if (d.trim().length > 0) {
       const stroke: Stroke = {
         id: uid(),
-        points: pts.slice(),
+        points: points.slice(),
         d,
         w: activeWidthRef.current,
         c: activeColorRef.current,
@@ -190,16 +321,14 @@ export function useCanvasInteractions({
     }
 
     currentPoints.current = [];
+    currentPathDraft.current = "";
     setCurrentPath("");
   }, [
     activeColorRef,
     activeWidthRef,
-    computeBBox,
     minPointsToSave,
-    pointsToSmoothPath,
     pushHistory,
     setStrokes,
-    uid,
   ]);
 
   const cancelStroke = useCallback(() => {
@@ -209,6 +338,7 @@ export function useCanvasInteractions({
       pending.current = false;
     }
     currentPoints.current = [];
+    currentPathDraft.current = "";
     setCurrentPath("");
   }, []);
 
@@ -219,22 +349,27 @@ export function useCanvasInteractions({
 
       setStrokes((prev) => {
         let changed = false;
-        const out: Stroke[] = [];
+        const next: Stroke[] = [];
 
         for (const stroke of prev) {
-          const replaced = splitStrokeByEraserPathPoints(stroke, points, radius);
-          if (replaced === null) out.push(stroke);
+          const replaced = splitStrokeByEraserPathPoints(
+            stroke,
+            points,
+            radius,
+            minPointsToSave,
+          );
+          if (replaced === null) next.push(stroke);
           else {
             changed = true;
-            out.push(...replaced);
+            next.push(...replaced);
           }
         }
 
         if (changed) eraserDidMutate.current = true;
-        return changed ? out : prev;
+        return changed ? next : prev;
       });
     },
-    [activeWidthRef, setStrokes, splitStrokeByEraserPathPoints],
+    [activeWidthRef, minPointsToSave, setStrokes],
   );
 
   const flushQueuedEraser = useCallback(() => {
@@ -269,8 +404,8 @@ export function useCanvasInteractions({
   );
 
   const eraseAtPoint = useCallback(
-    (p: Point) => {
-      queueEraserPoints([p]);
+    (point: Point) => {
+      queueEraserPoints([point]);
     },
     [queueEraserPoints],
   );
@@ -279,17 +414,17 @@ export function useCanvasInteractions({
     (from: Point, to: Point) => {
       const radius = activeWidthRef.current / 2;
       const step = Math.max(1.25, radius * 0.22);
+      const distance = dist(from, to);
 
-      const d = dist(from, to);
-      if (d <= step) {
+      if (distance <= step) {
         eraseAtPoint(to);
         return;
       }
 
-      const n = Math.ceil(d / step);
+      const sampleCount = Math.ceil(distance / step);
       const samples: Point[] = [];
-      for (let i = 1; i <= n; i++) {
-        const t = i / n;
+      for (let i = 1; i <= sampleCount; i++) {
+        const t = i / sampleCount;
         samples.push({
           x: from.x + (to.x - from.x) * t,
           y: from.y + (to.y - from.y) * t,
@@ -297,61 +432,61 @@ export function useCanvasInteractions({
       }
       queueEraserPoints(samples);
     },
-    [activeWidthRef, dist, eraseAtPoint, queueEraserPoints],
+    [activeWidthRef, eraseAtPoint, queueEraserPoints],
   );
 
-  const lassoToPath = useCallback((pts: Point[]) => {
-    if (pts.length === 0) return "";
-    let d = `M ${pts[0].x} ${pts[0].y} `;
-    for (let i = 1; i < pts.length; i++) d += `L ${pts[i].x} ${pts[i].y} `;
+  const lassoToPath = useCallback((points: Point[]) => {
+    if (points.length === 0) return "";
+    let d = `M ${points[0].x} ${points[0].y} `;
+    for (let i = 1; i < points.length; i++) d += `L ${points[i].x} ${points[i].y} `;
     d += "Z";
     return d;
   }, []);
 
   const startLasso = useCallback(
-    (p: Point) => {
-      lassoPoints.current = [p];
-      setLassoPath(lassoToPath(lassoPoints.current));
+    (point: Point) => {
+      lassoPoints.current = [point];
+      commitLassoPath(lassoToPath(lassoPoints.current), true);
     },
-    [lassoToPath],
+    [commitLassoPath, lassoToPath],
   );
 
   const extendLasso = useCallback(
-    (p: Point) => {
-      const pts = lassoPoints.current;
-      const last = pts[pts.length - 1];
-      if (last && dist(last, p) < 3) return;
-      pts.push(p);
-      setLassoPath(lassoToPath(pts));
+    (point: Point) => {
+      const points = lassoPoints.current;
+      const last = points[points.length - 1];
+      if (last && dist(last, point) < 3) return;
+      points.push(point);
+      commitLassoPath(lassoToPath(points));
     },
-    [dist, lassoToPath],
+    [commitLassoPath, lassoToPath],
   );
 
   const finishLassoAndSelect = useCallback(() => {
-    const poly = lassoPoints.current;
-    if (poly.length < 3) {
-      setLassoPath("");
+    const polygon = lassoPoints.current;
+    if (polygon.length < 3) {
+      commitLassoPath("");
       lassoPoints.current = [];
       return;
     }
 
-    const pb = computeBBox(poly);
-
+    const polygonBounds = computeBBox(polygon);
     const hits: string[] = [];
-    for (const stroke of strokes) {
-      const sb = {
+
+    for (const stroke of strokesRef.current) {
+      const strokeBounds = {
         minX: stroke.bbox.minX + stroke.dx,
         minY: stroke.bbox.minY + stroke.dy,
         maxX: stroke.bbox.maxX + stroke.dx,
         maxY: stroke.bbox.maxY + stroke.dy,
       };
-      if (!bboxOverlap(sb, pb)) continue;
+      if (!bboxOverlap(strokeBounds, polygonBounds)) continue;
 
       let inside = false;
       for (let i = 0; i < stroke.points.length; i += 2) {
-        const p = stroke.points[i];
-        const tp = { x: p.x + stroke.dx, y: p.y + stroke.dy };
-        if (pointInPoly(tp, poly)) {
+        const point = stroke.points[i];
+        const translatedPoint = { x: point.x + stroke.dx, y: point.y + stroke.dy };
+        if (pointInPoly(translatedPoint, polygon)) {
           inside = true;
           break;
         }
@@ -360,46 +495,49 @@ export function useCanvasInteractions({
     }
 
     setSelectedIds(hits);
-    setLassoPath("");
+    commitLassoPath("");
     lassoPoints.current = [];
-  }, [bboxOverlap, computeBBox, pointInPoly, strokes]);
+  }, [commitLassoPath, strokesRef]);
 
   const startMoveSelection = useCallback(
-    (p: Point) => {
-      if (selectedIds.length === 0) return;
+    (point: Point) => {
+      if (selectedIdsRef.current.length === 0) return;
       isMovingSelection.current = true;
-      moveStart.current = p;
+      moveStart.current = point;
       moveDidMutate.current = false;
+
       const base = new Map<string, { dx: number; dy: number }>();
-      for (const stroke of strokes) {
-        if (selectedSet.has(stroke.id)) {
+      for (const stroke of strokesRef.current) {
+        if (selectedSetRef.current.has(stroke.id)) {
           base.set(stroke.id, { dx: stroke.dx, dy: stroke.dy });
         }
       }
       moveBase.current = base;
     },
-    [selectedIds.length, selectedSet, strokes],
+    [strokesRef],
   );
 
   const moveSelectionTo = useCallback(
-    (p: Point) => {
+    (point: Point) => {
       if (!isMovingSelection.current || !moveStart.current) return;
-      const dx = p.x - moveStart.current.x;
-      const dy = p.y - moveStart.current.y;
+      ensureInfiniteCanvasRoom(point);
+
+      const dx = point.x - moveStart.current.x;
+      const dy = point.y - moveStart.current.y;
       if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
         moveDidMutate.current = true;
       }
 
       setStrokes((prev) =>
         prev.map((stroke) => {
-          if (!selectedSet.has(stroke.id)) return stroke;
+          if (!selectedSetRef.current.has(stroke.id)) return stroke;
           const base = moveBase.current.get(stroke.id);
           if (!base) return stroke;
           return { ...stroke, dx: base.dx + dx, dy: base.dy + dy };
         }),
       );
     },
-    [selectedSet, setStrokes],
+    [ensureInfiniteCanvasRoom, setStrokes],
   );
 
   const endMoveSelection = useCallback(() => {
@@ -413,34 +551,85 @@ export function useCanvasInteractions({
   }, [pushHistory, strokesRef]);
 
   const deleteSelection = useCallback(() => {
-    if (selectedIds.length === 0) return;
+    if (selectedIdsRef.current.length === 0) return;
     setStrokes((prev) => {
-      const updated = prev.filter((stroke) => !selectedSet.has(stroke.id));
+      const updated = prev.filter((stroke) => !selectedSetRef.current.has(stroke.id));
       pushHistory(updated);
       return updated;
     });
     setSelectedIds([]);
-  }, [pushHistory, selectedIds.length, selectedSet, setStrokes]);
+  }, [pushHistory, setStrokes]);
 
-  const clearPenModeArtifacts = useCallback(() => {
+  const getLocalPagePoint = useCallback(
+    (event: any): Point | null => {
+      const nativeEvent = event?.nativeEvent ?? {};
+      let localX: number | null = null;
+      let localY: number | null = null;
+
+      if (Platform.OS === "web") {
+        const targetRect = event?.currentTarget?.getBoundingClientRect?.();
+        if (
+          targetRect &&
+          typeof nativeEvent.clientX === "number" &&
+          typeof nativeEvent.clientY === "number"
+        ) {
+          localX = nativeEvent.clientX - targetRect.left;
+          localY = nativeEvent.clientY - targetRect.top;
+        }
+      } else {
+        localX =
+          typeof nativeEvent.locationX === "number"
+            ? nativeEvent.locationX
+            : typeof nativeEvent.offsetX === "number"
+              ? nativeEvent.offsetX
+              : null;
+        localY =
+          typeof nativeEvent.locationY === "number"
+            ? nativeEvent.locationY
+            : typeof nativeEvent.offsetY === "number"
+              ? nativeEvent.offsetY
+              : null;
+      }
+
+      if (localX == null || localY == null) return null;
+
+      const zoom = zoomRef.current;
+      const canvasSize = canvasSizeRef.current;
+      const x = localX / zoom;
+      const y = localY / zoom;
+      if (x < 0 || y < 0 || x > canvasSize.width || y > canvasSize.height) {
+        return null;
+      }
+      return { x, y };
+    },
+    [canvasSizeRef, zoomRef],
+  );
+
+  const resetCanvasState = useCallback(() => {
+    isPointerDown.current = false;
+    currentPoints.current = [];
+    currentPathDraft.current = "";
+    setCurrentPath("");
     setSelectedIds([]);
+    lassoPathDraft.current = "";
+    if (lassoRenderRaf.current != null) {
+      cancelAnimationFrame(lassoRenderRaf.current);
+      lassoRenderRaf.current = null;
+      lassoPending.current = false;
+    }
     setLassoPath("");
     lassoPoints.current = [];
+    eraserCursorDraft.current = null;
+    if (eraserCursorRenderRaf.current != null) {
+      cancelAnimationFrame(eraserCursorRenderRaf.current);
+      eraserCursorRenderRaf.current = null;
+      eraserCursorPending.current = false;
+    }
     setEraserCursor(null);
     lastEraserPoint.current = null;
-  }, []);
-
-  const clearEraserModeArtifacts = useCallback(() => {
-    setSelectedIds([]);
-    setLassoPath("");
-    lassoPoints.current = [];
-  }, []);
-
-  const clearLassoModeArtifacts = useCallback(() => {
-    setLassoPath("");
-    lassoPoints.current = [];
-    setEraserCursor(null);
-    lastEraserPoint.current = null;
+    isMovingSelection.current = false;
+    moveStart.current = null;
+    moveBase.current = new Map();
   }, []);
 
   const resetForPageSwitch = useCallback(() => {
@@ -448,9 +637,9 @@ export function useCanvasInteractions({
     cancelStroke();
     flushQueuedEraser();
     setSelectedIds([]);
-    setLassoPath("");
+    commitLassoPath("");
     lassoPoints.current = [];
-    setEraserCursor(null);
+    commitEraserCursor(null);
     lastEraserPoint.current = null;
     eraserDidMutate.current = false;
     queuedEraserPoints.current = [];
@@ -458,21 +647,7 @@ export function useCanvasInteractions({
     moveStart.current = null;
     moveBase.current = new Map();
     moveDidMutate.current = false;
-  }, [cancelStroke, flushQueuedEraser]);
-
-  const resetCanvasState = useCallback(() => {
-    isPointerDown.current = false;
-    currentPoints.current = [];
-    setCurrentPath("");
-    setSelectedIds([]);
-    setLassoPath("");
-    lassoPoints.current = [];
-    setEraserCursor(null);
-    lastEraserPoint.current = null;
-    isMovingSelection.current = false;
-    moveStart.current = null;
-    moveBase.current = new Map();
-  }, []);
+  }, [cancelStroke, commitEraserCursor, commitLassoPath, flushQueuedEraser]);
 
   const handleSelectPage = useCallback(
     (index: number) => {
@@ -489,153 +664,184 @@ export function useCanvasInteractions({
     removeCurrentPage(resetForPageSwitch);
   }, [removeCurrentPage, resetForPageSwitch]);
 
-  const getLocalPagePoint = useCallback(
-    (e: any): Point | null => {
-      const ne = e?.nativeEvent ?? {};
-      let lx: number | null = null;
-      let ly: number | null = null;
+  const clearPenModeArtifacts = useCallback(() => {
+    setSelectedIds([]);
+    commitLassoPath("");
+    commitEraserCursor(null);
+    lastEraserPoint.current = null;
+  }, [commitEraserCursor, commitLassoPath]);
 
-      if (Platform.OS === "web") {
-        const targetRect = e?.currentTarget?.getBoundingClientRect?.();
-        if (
-          targetRect &&
-          typeof ne.clientX === "number" &&
-          typeof ne.clientY === "number"
-        ) {
-          lx = ne.clientX - targetRect.left;
-          ly = ne.clientY - targetRect.top;
-        }
-      } else {
-        lx =
-          typeof ne.locationX === "number"
-            ? ne.locationX
-            : typeof ne.offsetX === "number"
-              ? ne.offsetX
-              : null;
-        ly =
-          typeof ne.locationY === "number"
-            ? ne.locationY
-            : typeof ne.offsetY === "number"
-              ? ne.offsetY
-              : null;
-      }
+  const clearEraserModeArtifacts = useCallback(() => {
+    setSelectedIds([]);
+    commitLassoPath("");
+  }, [commitLassoPath]);
 
-      if (lx == null || ly == null) return null;
+  const clearLassoModeArtifacts = useCallback(() => {
+    commitLassoPath("");
+    lassoPoints.current = [];
+    commitEraserCursor(null);
+    lastEraserPoint.current = null;
+  }, [commitEraserCursor, commitLassoPath]);
 
-      const x = lx / zoom;
-      const y = ly / zoom;
-      if (x < 0 || y < 0 || x > pageWidth || y > pageHeight) return null;
-      return { x, y };
-    },
-    [pageHeight, pageWidth, zoom],
-  );
+  const interactionApiRef = useRef({
+    getLocalPagePoint,
+    handleSelectPage,
+    startMoveSelection,
+    startLasso,
+    startStroke,
+    clearSelection: () => setSelectedIds([]),
+    showEraserCursor: commitEraserCursor,
+    eraseAtPoint,
+    extendLasso,
+    moveSelectionTo,
+    eraseAlongSegment,
+    extendStroke,
+    flushQueuedEraser,
+    pushHistory,
+    endMoveSelection,
+    finishLassoAndSelect,
+    endStroke,
+    clearLasso: () => commitLassoPath(""),
+    cancelStroke,
+  });
+
+  interactionApiRef.current = {
+    getLocalPagePoint,
+    handleSelectPage,
+    startMoveSelection,
+    startLasso,
+    startStroke,
+    clearSelection: () => setSelectedIds([]),
+    showEraserCursor: commitEraserCursor,
+    eraseAtPoint,
+    extendLasso,
+    moveSelectionTo,
+    eraseAlongSegment,
+    extendStroke,
+    flushQueuedEraser,
+    pushHistory,
+    endMoveSelection,
+    finishLassoAndSelect,
+    endStroke,
+    clearLasso: () => commitLassoPath(""),
+    cancelStroke,
+  };
 
   const pageHandlersByPage = useMemo(
     () =>
       pages.map((_, pageIndex) => {
         if (Platform.OS === "web") {
           return {
-            onPointerDown: (e: any) => {
-              if (e?.nativeEvent?.button != null && e.nativeEvent.button !== 0) {
+            onPointerDown: (event: any) => {
+              const api = interactionApiRef.current;
+              if (
+                event?.nativeEvent?.button != null &&
+                event.nativeEvent.button !== 0
+              ) {
                 return;
               }
 
-              e?.preventDefault?.();
-              e?.stopPropagation?.();
+              event?.preventDefault?.();
+              event?.stopPropagation?.();
 
-              const p = getLocalPagePoint(e);
-              if (!p) {
-                if (tool === "lasso") setSelectedIds([]);
+              const point = api.getLocalPagePoint(event);
+              if (!point) {
+                if (toolRef.current === "lasso") api.clearSelection();
                 return;
               }
 
-              if (pageIndex !== currentPageIndex) handleSelectPage(pageIndex);
+              if (pageIndex !== currentPageIndexRef.current) {
+                api.handleSelectPage(pageIndex);
+              }
 
               pointerPageIndex.current = pageIndex;
               isPointerDown.current = true;
-              e?.nativeEvent?.target?.setPointerCapture?.(
-                e.nativeEvent.pointerId,
+              event?.nativeEvent?.target?.setPointerCapture?.(
+                event.nativeEvent.pointerId,
               );
 
-              if (tool === "lasso") {
-                if (selectedIds.length > 0) startMoveSelection(p);
-                else startLasso(p);
+              if (toolRef.current === "lasso") {
+                if (selectedIdsRef.current.length > 0) api.startMoveSelection(point);
+                else api.startLasso(point);
                 return;
               }
 
-              if (tool === "eraser") {
-                setEraserCursor(p);
+              if (toolRef.current === "eraser") {
+                api.showEraserCursor(point, true);
                 eraserDidMutate.current = false;
-                lastEraserPoint.current = p;
-                eraseAtPoint(p);
+                lastEraserPoint.current = point;
+                api.eraseAtPoint(point);
                 return;
               }
 
-              startStroke(p);
+              api.startStroke(point);
             },
-            onPointerMove: (e: any) => {
+            onPointerMove: (event: any) => {
+              const api = interactionApiRef.current;
               if (!isPointerDown.current) return;
               if (pointerPageIndex.current !== pageIndex) return;
-              e?.preventDefault?.();
+              event?.preventDefault?.();
 
-              const p = getLocalPagePoint(e);
-              if (!p) return;
+              const point = api.getLocalPagePoint(event);
+              if (!point) return;
 
-              if (tool === "lasso") {
-                if (isMovingSelection.current) moveSelectionTo(p);
-                else extendLasso(p);
+              if (toolRef.current === "lasso") {
+                if (isMovingSelection.current) api.moveSelectionTo(point);
+                else api.extendLasso(point);
                 return;
               }
 
-              if (tool === "eraser") {
-                setEraserCursor(p);
-                const prev = lastEraserPoint.current;
-                if (prev) eraseAlongSegment(prev, p);
-                else eraseAtPoint(p);
-                lastEraserPoint.current = p;
+              if (toolRef.current === "eraser") {
+                api.showEraserCursor(point);
+                const previous = lastEraserPoint.current;
+                if (previous) api.eraseAlongSegment(previous, point);
+                else api.eraseAtPoint(point);
+                lastEraserPoint.current = point;
                 return;
               }
 
-              extendStroke(p);
+              api.extendStroke(point);
             },
-            onPointerUp: (e: any) => {
+            onPointerUp: (event: any) => {
+              const api = interactionApiRef.current;
               if (!isPointerDown.current) return;
               if (pointerPageIndex.current !== pageIndex) return;
-              e?.preventDefault?.();
+              event?.preventDefault?.();
 
               isPointerDown.current = false;
               pointerPageIndex.current = null;
 
-              if (tool === "eraser") {
-                flushQueuedEraser();
-                if (eraserDidMutate.current) pushHistory(strokesRef.current);
-                setEraserCursor(null);
+              if (toolRef.current === "eraser") {
+                api.flushQueuedEraser();
+                if (eraserDidMutate.current) api.pushHistory(strokesRef.current);
+                api.showEraserCursor(null);
                 lastEraserPoint.current = null;
                 eraserDidMutate.current = false;
                 return;
               }
 
-              if (tool === "lasso") {
-                if (isMovingSelection.current) endMoveSelection();
-                else finishLassoAndSelect();
+              if (toolRef.current === "lasso") {
+                if (isMovingSelection.current) api.endMoveSelection();
+                else api.finishLassoAndSelect();
                 return;
               }
 
-              endStroke();
+              api.endStroke();
             },
             onPointerCancel: () => {
+              const api = interactionApiRef.current;
               if (!isPointerDown.current) return;
               if (pointerPageIndex.current !== pageIndex) return;
               isPointerDown.current = false;
               pointerPageIndex.current = null;
-              flushQueuedEraser();
-              setEraserCursor(null);
+              api.flushQueuedEraser();
+              api.showEraserCursor(null);
               lastEraserPoint.current = null;
               eraserDidMutate.current = false;
-              endMoveSelection();
-              setLassoPath("");
+              api.endMoveSelection();
+              api.clearLasso();
               lassoPoints.current = [];
-              cancelStroke();
+              api.cancelStroke();
             },
           } as any;
         }
@@ -643,114 +849,100 @@ export function useCanvasInteractions({
         return {
           onStartShouldSetResponder: () => true,
           onMoveShouldSetResponder: () => true,
+          onResponderGrant: (event: any) => {
+            const api = interactionApiRef.current;
+            const point = api.getLocalPagePoint(event);
+            if (!point) return;
 
-          onResponderGrant: (e: any) => {
-            const p = getLocalPagePoint(e);
-            if (!p) return;
-
-            if (pageIndex !== currentPageIndex) handleSelectPage(pageIndex);
+            if (pageIndex !== currentPageIndexRef.current) {
+              api.handleSelectPage(pageIndex);
+            }
 
             isPointerDown.current = true;
             pointerPageIndex.current = pageIndex;
 
-            if (tool === "lasso") {
-              if (selectedIds.length > 0) startMoveSelection(p);
-              else startLasso(p);
+            if (toolRef.current === "lasso") {
+              if (selectedIdsRef.current.length > 0) api.startMoveSelection(point);
+              else api.startLasso(point);
               return;
             }
 
-            if (tool === "eraser") {
-              setEraserCursor(p);
+            if (toolRef.current === "eraser") {
+              api.showEraserCursor(point, true);
               eraserDidMutate.current = false;
-              lastEraserPoint.current = p;
-              eraseAtPoint(p);
+              lastEraserPoint.current = point;
+              api.eraseAtPoint(point);
               return;
             }
 
-            startStroke(p);
+            api.startStroke(point);
           },
-
-          onResponderMove: (e: any) => {
+          onResponderMove: (event: any) => {
+            const api = interactionApiRef.current;
             if (!isPointerDown.current) return;
             if (pointerPageIndex.current !== pageIndex) return;
-            const p = getLocalPagePoint(e);
-            if (!p) return;
+            const point = api.getLocalPagePoint(event);
+            if (!point) return;
 
-            if (tool === "lasso") {
-              if (isMovingSelection.current) moveSelectionTo(p);
-              else extendLasso(p);
+            if (toolRef.current === "lasso") {
+              if (isMovingSelection.current) api.moveSelectionTo(point);
+              else api.extendLasso(point);
               return;
             }
 
-            if (tool === "eraser") {
-              setEraserCursor(p);
-              const prev = lastEraserPoint.current;
-              if (prev) eraseAlongSegment(prev, p);
-              else eraseAtPoint(p);
-              lastEraserPoint.current = p;
+            if (toolRef.current === "eraser") {
+              api.showEraserCursor(point);
+              const previous = lastEraserPoint.current;
+              if (previous) api.eraseAlongSegment(previous, point);
+              else api.eraseAtPoint(point);
+              lastEraserPoint.current = point;
               return;
             }
 
-            extendStroke(p);
+            api.extendStroke(point);
           },
-
           onResponderRelease: () => {
+            const api = interactionApiRef.current;
             if (!isPointerDown.current) return;
             if (pointerPageIndex.current !== pageIndex) return;
             isPointerDown.current = false;
             pointerPageIndex.current = null;
 
-            if (tool === "eraser") {
-              flushQueuedEraser();
-              if (eraserDidMutate.current) pushHistory(strokesRef.current);
-              setEraserCursor(null);
+            if (toolRef.current === "eraser") {
+              api.flushQueuedEraser();
+              if (eraserDidMutate.current) api.pushHistory(strokesRef.current);
+              api.showEraserCursor(null);
               lastEraserPoint.current = null;
               eraserDidMutate.current = false;
               return;
             }
 
-            if (tool === "lasso") {
-              if (isMovingSelection.current) endMoveSelection();
-              else finishLassoAndSelect();
+            if (toolRef.current === "lasso") {
+              if (isMovingSelection.current) api.endMoveSelection();
+              else api.finishLassoAndSelect();
               return;
             }
 
-            endStroke();
+            api.endStroke();
           },
           onResponderTerminate: () => {
+            const api = interactionApiRef.current;
             if (!isPointerDown.current) return;
             if (pointerPageIndex.current !== pageIndex) return;
             isPointerDown.current = false;
             pointerPageIndex.current = null;
-            flushQueuedEraser();
-            if (tool === "eraser") eraserDidMutate.current = false;
-            cancelStroke();
+            api.flushQueuedEraser();
+            if (toolRef.current === "eraser") {
+              eraserDidMutate.current = false;
+            }
+            api.showEraserCursor(null);
+            api.clearLasso();
+            lassoPoints.current = [];
+            api.cancelStroke();
           },
         };
       }),
-    [
-      cancelStroke,
-      currentPageIndex,
-      endMoveSelection,
-      endStroke,
-      eraseAlongSegment,
-      eraseAtPoint,
-      extendLasso,
-      extendStroke,
-      finishLassoAndSelect,
-      flushQueuedEraser,
-      getLocalPagePoint,
-      handleSelectPage,
-      moveSelectionTo,
-      pages,
-      pushHistory,
-      selectedIds.length,
-      startLasso,
-      startMoveSelection,
-      startStroke,
-      strokesRef,
-      tool,
-    ],
+    [pages, strokesRef],
   );
 
   return {

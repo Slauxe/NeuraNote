@@ -1,6 +1,13 @@
-import type { NoteDoc } from "./noteDocument";
+import type {
+  InfiniteBoard,
+  InfiniteBoardBackgroundStyle,
+  NoteDoc,
+  NoteKind,
+} from "./noteDocument";
 import {
   EMPTY_PAGE_BACKGROUND,
+  INFINITE_CANVAS_H,
+  INFINITE_CANVAS_W,
   type PageBackground,
   type Point,
   type Stroke,
@@ -56,6 +63,12 @@ function uid() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
+function sanitizeBoardBackgroundStyle(
+  value: unknown,
+): InfiniteBoardBackgroundStyle {
+  return value === "dots" || value === "blank" ? value : "grid";
+}
+
 export function sanitizeStroke(raw: any): Stroke | null {
   if (!raw) return null;
   const points = Array.isArray(raw.points) ? raw.points : [];
@@ -94,10 +107,31 @@ export function sanitizeStroke(raw: any): Stroke | null {
 }
 
 export function normalizeDocToPages(rawDoc: any): {
+  kind: NoteKind;
+  board: InfiniteBoard | null;
   pages: Stroke[][];
   pageBackgrounds: PageBackground[];
   currentPageIndex: number;
 } {
+  const kind: NoteKind = rawDoc?.kind === "infinite" ? "infinite" : "page";
+  const board: InfiniteBoard | null =
+    kind === "infinite" &&
+    Number.isFinite(rawDoc?.board?.width) &&
+    Number.isFinite(rawDoc?.board?.height)
+      ? {
+          width: Math.max(INFINITE_CANVAS_W, Math.trunc(rawDoc.board.width)),
+          height: Math.max(INFINITE_CANVAS_H, Math.trunc(rawDoc.board.height)),
+          backgroundStyle: sanitizeBoardBackgroundStyle(
+            rawDoc?.board?.backgroundStyle,
+          ),
+        }
+      : kind === "infinite"
+        ? {
+            width: INFINITE_CANVAS_W,
+            height: INFINITE_CANVAS_H,
+            backgroundStyle: "grid",
+          }
+        : null;
   const rawPages = Array.isArray(rawDoc?.pages) ? rawDoc.pages : null;
 
   let pages: Stroke[][] = [];
@@ -142,13 +176,15 @@ export function normalizeDocToPages(rawDoc: any): {
     ? Math.max(0, Math.min(pages.length - 1, Math.trunc(rawIndex)))
     : 0;
 
-  return { pages, pageBackgrounds, currentPageIndex };
+  return { kind, board, pages, pageBackgrounds, currentPageIndex };
 }
 
 export function buildDocFromPages(
   pages: Stroke[][],
   pageBackgrounds: PageBackground[],
   currentPageIndex: number,
+  kind: NoteKind = "page",
+  board: InfiniteBoard | null = null,
 ): NoteDoc {
   const safePages = pages.length > 0 ? pages : [[]];
   const safeBackgrounds = safePages.map(
@@ -160,6 +196,8 @@ export function buildDocFromPages(
   );
 
   return {
+    kind,
+    ...(kind === "infinite" && board ? { board } : {}),
     strokes: safePages[clampedIndex] ?? [],
     pages: safePages.map((p, i) => ({
       id: `page-${i + 1}`,

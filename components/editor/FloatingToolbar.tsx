@@ -25,8 +25,8 @@ type FloatingToolbarProps = {
   toolbarOrientation: "horizontal" | "vertical";
   penColor: string;
   tool: Tool;
-  currentPageIndex: number;
-  pageCount: number;
+  navLabel: string;
+  navSubLabel: string;
   selectedCount: number;
   zoom: number;
   historyIndex: number;
@@ -52,8 +52,8 @@ export function FloatingToolbar({
   toolbarOrientation,
   penColor,
   tool,
-  currentPageIndex,
-  pageCount,
+  navLabel,
+  navSubLabel,
   selectedCount,
   zoom,
   historyIndex,
@@ -167,7 +167,7 @@ export function FloatingToolbar({
                 lineHeight: 14,
               }}
             >
-              Pages
+              {navLabel}
             </Text>
             <Text
               style={{
@@ -176,7 +176,7 @@ export function FloatingToolbar({
                 lineHeight: 12,
               }}
             >
-              {currentPageIndex + 1}/{Math.max(1, pageCount)}
+              {navSubLabel}
             </Text>
           </View>
         </EditorIconButton>
