@@ -2,6 +2,7 @@
 import * as FileSystem from "expo-file-system/legacy";
 import { Platform } from "react-native";
 import { createEmptyNoteDoc, type NoteDoc } from "./noteDocument";
+import { deleteBackgroundAsset } from "./webBackgroundAssets";
 
 export type { NoteDoc } from "./noteDocument";
 
@@ -25,8 +26,16 @@ type NotesIndexFile = {
   notes: NoteMeta[];
 };
 
+type NoteDraftFile = {
+  version: 1;
+  noteId: string;
+  updatedAt: number;
+  doc: NoteDoc;
+};
+
 const NOTES_DIR_NAME = "notes";
 const INDEX_FILE_NAME = "index.json";
+const DRAFT_SUFFIX = ".draft.json";
 
 function ensureDocumentDir() {
   // Web doesn’t have FileSystem.documentDirectory
@@ -55,6 +64,10 @@ function notePath(id: string): string {
   return `${notesDir()}${id}.json`;
 }
 
+function draftPath(id: string): string {
+  return `${notesDir()}${id}${DRAFT_SUFFIX}`;
+}
+
 async function exists(path: string): Promise<boolean> {
   if (Platform.OS === "web") {
     return localStorage.getItem(path) != null;
@@ -72,9 +85,12 @@ async function writeJsonAtomic(path: string, data: unknown): Promise<void> {
     return;
   }
 
-  await FileSystem.writeAsStringAsync(path, json, {
+  const tempPath = `${path}.tmp`;
+  await FileSystem.writeAsStringAsync(tempPath, json, {
     encoding: "utf8" as any,
   });
+  await FileSystem.deleteAsync(path, { idempotent: true });
+  await FileSystem.moveAsync({ from: tempPath, to: path });
 }
 
 async function readJson<T>(path: string): Promise<T | null> {
@@ -148,6 +164,7 @@ async function rebuildIndexFromFiles(): Promise<NotesIndexFile> {
   for (const f of files) {
     if (!f.endsWith(".json")) continue;
     if (f === INDEX_FILE_NAME) continue;
+    if (f.endsWith(DRAFT_SUFFIX)) continue;
 
     const id = f.replace(/\.json$/, "");
     const nf = await readJson<NoteFile>(notePath(id));
@@ -171,6 +188,16 @@ function newId(): string {
 
 function now(): number {
   return Date.now();
+}
+
+function collectBackgroundAssetIds(doc: NoteDoc | null | undefined) {
+  if (!doc?.pages?.length) return [] as string[];
+  const ids = doc.pages
+    .map((page) =>
+      typeof page?.backgroundAssetId === "string" ? page.backgroundAssetId : null,
+    )
+    .filter((value): value is string => !!value);
+  return [...new Set(ids)];
 }
 
 /** List note metadata (for Explore UI). Sorted by updatedAt desc. */
@@ -208,6 +235,22 @@ export async function createNote(
   await saveIndex(next);
 
   return id;
+}
+
+export async function duplicateNote(id: string): Promise<string> {
+  const existing = await loadNote(id);
+  if (!existing) {
+    throw new Error("Note not found.");
+  }
+
+  const duplicateTitle = `${existing.meta.title || "No name"} copy`;
+  const duplicatedDoc = JSON.parse(JSON.stringify(existing.doc)) as NoteDoc;
+
+  return createNote(
+    duplicateTitle,
+    existing.meta.coverColor ?? "#8B5CF6",
+    duplicatedDoc,
+  );
 }
 
 /** Load a note file by id. Returns null if missing/corrupt. */
@@ -273,11 +316,16 @@ export async function saveNote(
 
 /** Delete note file + remove from index.json. */
 export async function deleteNote(id: string): Promise<void> {
+  const existing = await loadNote(id).catch(() => null);
+  const existingDraft = await loadNoteDraft(id).catch(() => null);
+
   // Remove file
   if (Platform.OS === "web") {
     localStorage.removeItem(notePath(id));
+    localStorage.removeItem(draftPath(id));
   } else {
     await FileSystem.deleteAsync(notePath(id), { idempotent: true });
+    await FileSystem.deleteAsync(draftPath(id), { idempotent: true });
   }
 
   // Update index
@@ -287,9 +335,53 @@ export async function deleteNote(id: string): Promise<void> {
     notes: idx.notes.filter((n) => n.id !== id),
   };
   await saveIndex(next);
+
+  if (Platform.OS === "web") {
+    const assetIds = [
+      ...collectBackgroundAssetIds(existing?.doc),
+      ...collectBackgroundAssetIds(existingDraft?.doc),
+    ];
+    await Promise.all(assetIds.map((assetId) => deleteBackgroundAsset(assetId)));
+  }
 }
 
 /** Helpful for debugging / export later */
 export function getNotesDirectoryUri(): string {
   return notesDir();
+}
+
+export async function saveNoteDraft(id: string, doc: NoteDoc): Promise<number> {
+  const updatedAt = now();
+  const draft: NoteDraftFile = {
+    version: 1,
+    noteId: id,
+    updatedAt,
+    doc,
+  };
+  await ensureNotesDir();
+  await writeJsonAtomic(draftPath(id), draft);
+  return updatedAt;
+}
+
+export async function loadNoteDraft(
+  id: string,
+): Promise<{ updatedAt: number; doc: NoteDoc } | null> {
+  await ensureNotesDir();
+  const draft = await readJson<NoteDraftFile>(draftPath(id));
+  if (!draft || draft.noteId !== id) return null;
+  if (!Number.isFinite(draft.updatedAt)) return null;
+
+  return {
+    updatedAt: draft.updatedAt,
+    doc: draft.doc ?? createEmptyNoteDoc(),
+  };
+}
+
+export async function clearNoteDraft(id: string): Promise<void> {
+  const path = draftPath(id);
+  if (Platform.OS === "web") {
+    localStorage.removeItem(path);
+    return;
+  }
+  await FileSystem.deleteAsync(path, { idempotent: true });
 }

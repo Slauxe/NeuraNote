@@ -1,14 +1,30 @@
 import type { Router } from "expo-router";
-import { useEffect, useRef, useState, type RefObject } from "react";
+import {
+  AppState,
+  Platform,
+  type AppStateStatus,
+} from "react-native";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 
 import { buildDocFromPages, normalizeDocToPages } from "@/lib/editorDocument";
 import type { PageBackground, Stroke } from "@/lib/editorTypes";
 import type {
   InfiniteBoard,
   InfiniteBoardBackgroundStyle,
+  NoteDoc,
   NoteKind,
 } from "@/lib/noteDocument";
-import { createNote, loadNote, saveNote } from "@/lib/notesStorage";
+import {
+  clearNoteDraft,
+  createNote,
+  loadNote,
+  loadNoteDraft,
+  saveNote,
+  saveNoteDraft,
+} from "@/lib/notesStorage";
+import { migratePageBackgroundsToAssets } from "@/lib/webBackgroundAssets";
+
+type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 
 type UseNotePersistenceArgs = {
   routeNoteId: string | null;
@@ -26,13 +42,40 @@ type UseNotePersistenceArgs = {
   setNoteKind: (kind: NoteKind) => void;
   setBoardSize: (board: InfiniteBoard | null) => void;
   setBoardBackgroundStyle: (style: InfiniteBoardBackgroundStyle) => void;
-  setPages: (pages: Stroke[][]) => void;
-  setPageBackgrounds: (backgrounds: PageBackground[]) => void;
-  setCurrentPageIndex: (index: number) => void;
-  setStrokes: (strokes: Stroke[]) => void;
-  setHistory: (history: Stroke[][]) => void;
-  setHistoryIndex: (index: number) => void;
+  loadSnapshot: (snapshot: {
+    pages: Stroke[][];
+    pageBackgrounds: PageBackground[];
+    currentPageIndex: number;
+    strokes: Stroke[];
+  }) => void;
 };
+
+type Snapshot = {
+  pages: Stroke[][];
+  pageBackgrounds: PageBackground[];
+  currentPageIndex: number;
+  noteKind: NoteKind;
+  boardSize: InfiniteBoard | null;
+  boardBackgroundStyle: InfiniteBoardBackgroundStyle;
+};
+
+const SAVE_DEBOUNCE_MS = 450;
+const STATUS_RESET_MS = 1400;
+
+function buildSnapshotDoc(snapshot: Snapshot): NoteDoc {
+  return buildDocFromPages(
+    snapshot.pages,
+    snapshot.pageBackgrounds,
+    snapshot.currentPageIndex,
+    snapshot.noteKind,
+    snapshot.boardSize
+      ? {
+          ...snapshot.boardSize,
+          backgroundStyle: snapshot.boardBackgroundStyle,
+        }
+      : null,
+  );
+}
 
 export function useNotePersistence({
   routeNoteId,
@@ -50,23 +93,160 @@ export function useNotePersistence({
   setNoteKind,
   setBoardSize,
   setBoardBackgroundStyle,
-  setPages,
-  setPageBackgrounds,
-  setCurrentPageIndex,
-  setStrokes,
-  setHistory,
-  setHistoryIndex,
+  loadSnapshot,
 }: UseNotePersistenceArgs) {
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
   const [hydrating, setHydrating] = useState(false);
+  const [saveState, setSaveState] = useState<SaveState>("idle");
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [recoveredFromDraft, setRecoveredFromDraft] = useState(false);
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+
+  const activeNoteIdRef = useRef<string | null>(null);
+  const hydratingRef = useRef(false);
+  const snapshotRef = useRef<Snapshot>({
+    pages,
+    pageBackgrounds,
+    currentPageIndex,
+    noteKind,
+    boardSize,
+    boardBackgroundStyle,
+  });
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dirtyRef = useRef(false);
+  const isSavingRef = useRef(false);
+  const queuedSaveRef = useRef(false);
+  const pendingDraftTimestampRef = useRef<number | null>(null);
+  const forceFlushIdRef = useRef(0);
+  const skipNextAutosaveRef = useRef(false);
+
+  const clearSaveTimer = useCallback(() => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+  }, []);
+
+  const clearStatusTimer = useCallback(() => {
+    if (statusTimerRef.current) {
+      clearTimeout(statusTimerRef.current);
+      statusTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleSavedStatusReset = useCallback(() => {
+    clearStatusTimer();
+    statusTimerRef.current = setTimeout(() => {
+      if (!dirtyRef.current && !isSavingRef.current) {
+        setSaveState("idle");
+      }
+    }, STATUS_RESET_MS);
+  }, [clearStatusTimer]);
+
+  const captureSnapshot = useCallback(() => snapshotRef.current, []);
+
+  const persistCurrentSnapshot = useCallback(
+    async (reason: "debounced" | "flush") => {
+      const noteId = activeNoteIdRef.current;
+      if (!noteId || hydratingRef.current) return;
+
+      if (isSavingRef.current) {
+        queuedSaveRef.current = true;
+        return;
+      }
+
+      isSavingRef.current = true;
+      clearStatusTimer();
+      setSaveState("saving");
+      setSaveError(null);
+
+      try {
+        const snapshot = captureSnapshot();
+        const doc = buildSnapshotDoc(snapshot);
+        let draftTimestamp: number | null = null;
+        if (Platform.OS !== "web") {
+          draftTimestamp = await saveNoteDraft(noteId, doc);
+          pendingDraftTimestampRef.current = draftTimestamp;
+        }
+        await saveNote(noteId, { doc });
+        if (
+          draftTimestamp != null &&
+          pendingDraftTimestampRef.current === draftTimestamp
+        ) {
+          await clearNoteDraft(noteId);
+          pendingDraftTimestampRef.current = null;
+        }
+        dirtyRef.current = false;
+        setLastSavedAt(Date.now());
+        setSaveState("saved");
+        scheduleSavedStatusReset();
+      } catch (error: any) {
+        dirtyRef.current = true;
+        const message =
+          typeof error?.message === "string" && error.message.trim()
+            ? error.message.trim()
+            : reason === "flush"
+              ? "Could not finish saving before the app closed."
+              : "Could not save your latest changes.";
+        setSaveState("error");
+        setSaveError(message);
+      } finally {
+        isSavingRef.current = false;
+        if (queuedSaveRef.current && activeNoteIdRef.current === noteId) {
+          queuedSaveRef.current = false;
+          persistCurrentSnapshot("debounced").catch(() => {});
+        }
+      }
+    },
+    [captureSnapshot, clearStatusTimer, scheduleSavedStatusReset],
+  );
+
+  const flushPendingSave = useCallback(async () => {
+    clearSaveTimer();
+    if (!dirtyRef.current || hydratingRef.current || !activeNoteIdRef.current) {
+      return;
+    }
+    const flushId = ++forceFlushIdRef.current;
+    await persistCurrentSnapshot("flush");
+    if (forceFlushIdRef.current !== flushId) return;
+  }, [clearSaveTimer, persistCurrentSnapshot]);
+
+  useEffect(() => {
+    snapshotRef.current = {
+      pages,
+      pageBackgrounds,
+      currentPageIndex,
+      noteKind,
+      boardSize,
+      boardBackgroundStyle,
+    };
+  }, [
+    pages,
+    pageBackgrounds,
+    currentPageIndex,
+    noteKind,
+    boardSize,
+    boardBackgroundStyle,
+  ]);
+
+  useEffect(() => {
+    activeNoteIdRef.current = activeNoteId;
+  }, [activeNoteId]);
+
+  useEffect(() => {
+    hydratingRef.current = hydrating;
+  }, [hydrating]);
 
   useEffect(() => {
     let cancelled = false;
 
     const run = async () => {
+      await flushPendingSave().catch(() => {});
+
       if (!routeNoteId) {
         setActiveNoteId(null);
+        activeNoteIdRef.current = null;
         try {
           const newId = await createNote("No name");
           if (cancelled) return;
@@ -80,42 +260,81 @@ export function useNotePersistence({
         return;
       }
 
-      if (saveTimerRef.current) {
-        clearTimeout(saveTimerRef.current);
-        saveTimerRef.current = null;
-      }
-
+      clearSaveTimer();
+      clearStatusTimer();
+      dirtyRef.current = false;
+      queuedSaveRef.current = false;
+      pendingDraftTimestampRef.current = null;
+      setSaveState("idle");
+      setSaveError(null);
+      setRecoveredFromDraft(false);
+      setLastSavedAt(null);
       setActiveNoteId(routeNoteId);
       setHydrating(true);
       resetCanvasState();
-      setStrokes([]);
 
       try {
-        const data = await loadNote(routeNoteId);
+        const [storedNote, draft] = await Promise.all([
+          loadNote(routeNoteId),
+          Platform.OS === "web"
+            ? Promise.resolve(null)
+            : loadNoteDraft(routeNoteId),
+        ]);
         if (cancelled) return;
 
-        const normalized = normalizeDocToPages(data?.doc);
+        const shouldUseDraft =
+          !!draft &&
+          (!storedNote || draft.updatedAt >= storedNote.meta.updatedAt);
+        const sourceDoc = shouldUseDraft ? draft.doc : storedNote?.doc;
+        const normalized = normalizeDocToPages(sourceDoc);
+        const migratedBackgrounds =
+          Platform.OS === "web"
+            ? await migratePageBackgroundsToAssets(normalized.pageBackgrounds)
+            : { backgrounds: normalized.pageBackgrounds, changed: false };
         const pageStrokes = normalized.pages[normalized.currentPageIndex] ?? [];
+
         setNoteKind(normalized.kind);
         setBoardSize(normalized.board);
         setBoardBackgroundStyle(normalized.board?.backgroundStyle ?? "grid");
-        setPages(normalized.pages);
-        setPageBackgrounds(normalized.pageBackgrounds);
-        setCurrentPageIndex(normalized.currentPageIndex);
-        setStrokes(pageStrokes);
-        setHistory([pageStrokes]);
-        setHistoryIndex(0);
+        loadSnapshot({
+          pages: normalized.pages,
+          pageBackgrounds: migratedBackgrounds.backgrounds,
+          currentPageIndex: normalized.currentPageIndex,
+          strokes: pageStrokes,
+        });
+
+        snapshotRef.current = {
+          pages: normalized.pages,
+          pageBackgrounds: migratedBackgrounds.backgrounds,
+          currentPageIndex: normalized.currentPageIndex,
+          noteKind: normalized.kind,
+          boardSize: normalized.board,
+          boardBackgroundStyle: normalized.board?.backgroundStyle ?? "grid",
+        };
+
+        if (shouldUseDraft) {
+          setRecoveredFromDraft(true);
+          dirtyRef.current = true;
+          setSaveState("dirty");
+        } else if (migratedBackgrounds.changed) {
+          dirtyRef.current = true;
+          setSaveState("dirty");
+        } else if (storedNote?.meta.updatedAt) {
+          skipNextAutosaveRef.current = true;
+          setLastSavedAt(storedNote.meta.updatedAt);
+        }
       } catch {
         if (!cancelled) {
+          skipNextAutosaveRef.current = true;
           setNoteKind("page");
           setBoardSize(null);
           setBoardBackgroundStyle("grid");
-          setPages([[]]);
-          setPageBackgrounds([{ ...emptyBackground }]);
-          setCurrentPageIndex(0);
-          setStrokes([]);
-          setHistory([[]]);
-          setHistoryIndex(0);
+          loadSnapshot({
+            pages: [[]],
+            pageBackgrounds: [{ ...emptyBackground }],
+            currentPageIndex: 0,
+            strokes: [],
+          });
         }
       } finally {
         if (!cancelled) {
@@ -137,42 +356,30 @@ export function useNotePersistence({
     setNoteKind,
     setBoardSize,
     setBoardBackgroundStyle,
-    setCurrentPageIndex,
-    setHistory,
-    setHistoryIndex,
-    setPageBackgrounds,
-    setPages,
-    setStrokes,
+    loadSnapshot,
+    clearSaveTimer,
+    clearStatusTimer,
+    flushPendingSave,
   ]);
 
   useEffect(() => {
-    if (!activeNoteId) return;
-    if (hydrating) return;
+    if (!activeNoteId || hydrating) return;
     if (isPointerDownRef.current) return;
+    if (skipNextAutosaveRef.current) {
+      skipNextAutosaveRef.current = false;
+      return;
+    }
 
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    dirtyRef.current = true;
+    setSaveState((prev) => (prev === "error" ? "error" : "dirty"));
+    clearSaveTimer();
 
     saveTimerRef.current = setTimeout(() => {
-      if (hydrating) return;
+      if (hydratingRef.current) return;
+      persistCurrentSnapshot("debounced").catch(() => {});
+    }, SAVE_DEBOUNCE_MS);
 
-      const doc = buildDocFromPages(
-        pages,
-        pageBackgrounds,
-        currentPageIndex,
-        noteKind,
-        boardSize
-          ? { ...boardSize, backgroundStyle: boardBackgroundStyle }
-          : null,
-      );
-      saveNote(activeNoteId, { doc }).catch(() => {});
-    }, 450);
-
-    return () => {
-      if (saveTimerRef.current) {
-        clearTimeout(saveTimerRef.current);
-        saveTimerRef.current = null;
-      }
-    };
+    return clearSaveTimer;
   }, [
     strokes,
     activeNoteId,
@@ -184,10 +391,66 @@ export function useNotePersistence({
     boardSize,
     boardBackgroundStyle,
     isPointerDownRef,
+    clearSaveTimer,
+    persistCurrentSnapshot,
   ]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener(
+      "change",
+      (nextState: AppStateStatus) => {
+        if (nextState !== "active") {
+          flushPendingSave().catch(() => {});
+        }
+      },
+    );
+
+    return () => {
+      subscription.remove();
+    };
+  }, [flushPendingSave]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof window === "undefined") return;
+
+    const onBeforeUnload = () => {
+      flushPendingSave().catch(() => {});
+    };
+
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+  }, [flushPendingSave]);
+
+  useEffect(
+    () => () => {
+      clearSaveTimer();
+      clearStatusTimer();
+      flushPendingSave().catch(() => {});
+    },
+    [clearSaveTimer, clearStatusTimer, flushPendingSave],
+  );
+
+  const retrySave = useCallback(() => {
+    if (!activeNoteIdRef.current || hydratingRef.current) return;
+    dirtyRef.current = true;
+    clearSaveTimer();
+    persistCurrentSnapshot("flush").catch(() => {});
+  }, [clearSaveTimer, persistCurrentSnapshot]);
+
+  const dismissRecoveredFromDraft = useCallback(() => {
+    setRecoveredFromDraft(false);
+  }, []);
 
   return {
     activeNoteId,
     hydrating,
+    saveState,
+    saveError,
+    lastSavedAt,
+    recoveredFromDraft,
+    retrySave,
+    dismissRecoveredFromDraft,
   };
 }

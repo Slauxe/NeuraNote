@@ -22,8 +22,13 @@ type UseCanvasInteractionsArgs = {
   tool: Tool;
   pages: Stroke[][];
   strokesRef: React.RefObject<Stroke[]>;
-  setStrokes: React.Dispatch<React.SetStateAction<Stroke[]>>;
-  pushHistory: (newStrokes: Stroke[]) => void;
+  updateCurrentPageStrokes: (
+    next: Stroke[] | ((prev: Stroke[]) => Stroke[]),
+  ) => Stroke[];
+  commitCurrentPageStrokes: (
+    next: Stroke[] | ((prev: Stroke[]) => Stroke[]),
+  ) => Stroke[];
+  commitCurrentPageHistory: (snapshot?: Stroke[]) => void;
   currentPageIndex: number;
   selectPage: (index: number, beforeSwitch: () => void) => void;
   addPageBelowCurrent: (beforeSwitch: () => void) => void;
@@ -48,8 +53,9 @@ export function useCanvasInteractions({
   tool,
   pages,
   strokesRef,
-  setStrokes,
-  pushHistory,
+  updateCurrentPageStrokes,
+  commitCurrentPageStrokes,
+  commitCurrentPageHistory,
   currentPageIndex,
   selectPage,
   addPageBelowCurrent,
@@ -302,23 +308,19 @@ export function useCanvasInteractions({
     const d = pointsToSmoothPath(points);
     const bbox = computeBBox(points);
 
-    if (d.trim().length > 0) {
-      const stroke: Stroke = {
+      if (d.trim().length > 0) {
+        const stroke: Stroke = {
         id: uid(),
         points: points.slice(),
         d,
         w: activeWidthRef.current,
         c: activeColorRef.current,
         dx: 0,
-        dy: 0,
-        bbox,
-      };
-      setStrokes((prev) => {
-        const updated = [...prev, stroke];
-        pushHistory(updated);
-        return updated;
-      });
-    }
+          dy: 0,
+          bbox,
+        };
+        commitCurrentPageStrokes((prev) => [...prev, stroke]);
+      }
 
     currentPoints.current = [];
     currentPathDraft.current = "";
@@ -326,9 +328,8 @@ export function useCanvasInteractions({
   }, [
     activeColorRef,
     activeWidthRef,
+    commitCurrentPageStrokes,
     minPointsToSave,
-    pushHistory,
-    setStrokes,
   ]);
 
   const cancelStroke = useCallback(() => {
@@ -347,7 +348,7 @@ export function useCanvasInteractions({
       if (points.length === 0) return;
       const radius = activeWidthRef.current / 2;
 
-      setStrokes((prev) => {
+      updateCurrentPageStrokes((prev) => {
         let changed = false;
         const next: Stroke[] = [];
 
@@ -369,7 +370,7 @@ export function useCanvasInteractions({
         return changed ? next : prev;
       });
     },
-    [activeWidthRef, minPointsToSave, setStrokes],
+    [activeWidthRef, minPointsToSave, updateCurrentPageStrokes],
   );
 
   const flushQueuedEraser = useCallback(() => {
@@ -528,7 +529,7 @@ export function useCanvasInteractions({
         moveDidMutate.current = true;
       }
 
-      setStrokes((prev) =>
+      updateCurrentPageStrokes((prev) =>
         prev.map((stroke) => {
           if (!selectedSetRef.current.has(stroke.id)) return stroke;
           const base = moveBase.current.get(stroke.id);
@@ -537,28 +538,26 @@ export function useCanvasInteractions({
         }),
       );
     },
-    [ensureInfiniteCanvasRoom, setStrokes],
+    [ensureInfiniteCanvasRoom, updateCurrentPageStrokes],
   );
 
   const endMoveSelection = useCallback(() => {
     if (isMovingSelection.current && moveDidMutate.current) {
-      pushHistory(strokesRef.current);
+      commitCurrentPageHistory(strokesRef.current);
     }
     isMovingSelection.current = false;
     moveStart.current = null;
     moveBase.current = new Map();
     moveDidMutate.current = false;
-  }, [pushHistory, strokesRef]);
+  }, [commitCurrentPageHistory, strokesRef]);
 
   const deleteSelection = useCallback(() => {
     if (selectedIdsRef.current.length === 0) return;
-    setStrokes((prev) => {
-      const updated = prev.filter((stroke) => !selectedSetRef.current.has(stroke.id));
-      pushHistory(updated);
-      return updated;
-    });
+    commitCurrentPageStrokes((prev) =>
+      prev.filter((stroke) => !selectedSetRef.current.has(stroke.id)),
+    );
     setSelectedIds([]);
-  }, [pushHistory, setStrokes]);
+  }, [commitCurrentPageStrokes]);
 
   const getLocalPagePoint = useCallback(
     (event: any): Point | null => {
@@ -697,7 +696,7 @@ export function useCanvasInteractions({
     eraseAlongSegment,
     extendStroke,
     flushQueuedEraser,
-    pushHistory,
+    commitCurrentPageHistory,
     endMoveSelection,
     finishLassoAndSelect,
     endStroke,
@@ -719,7 +718,7 @@ export function useCanvasInteractions({
     eraseAlongSegment,
     extendStroke,
     flushQueuedEraser,
-    pushHistory,
+    commitCurrentPageHistory,
     endMoveSelection,
     finishLassoAndSelect,
     endStroke,
@@ -813,7 +812,9 @@ export function useCanvasInteractions({
 
               if (toolRef.current === "eraser") {
                 api.flushQueuedEraser();
-                if (eraserDidMutate.current) api.pushHistory(strokesRef.current);
+                if (eraserDidMutate.current) {
+                  api.commitCurrentPageHistory(strokesRef.current);
+                }
                 api.showEraserCursor(null);
                 lastEraserPoint.current = null;
                 eraserDidMutate.current = false;
@@ -910,7 +911,9 @@ export function useCanvasInteractions({
 
             if (toolRef.current === "eraser") {
               api.flushQueuedEraser();
-              if (eraserDidMutate.current) api.pushHistory(strokesRef.current);
+              if (eraserDidMutate.current) {
+                api.commitCurrentPageHistory(strokesRef.current);
+              }
               api.showEraserCursor(null);
               lastEraserPoint.current = null;
               eraserDidMutate.current = false;

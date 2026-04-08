@@ -1,0 +1,886 @@
+import { useLocalSearchParams, useRouter } from "expo-router";
+import { ChevronLeft } from "lucide-react-native";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+
+import { FloatingToolbar } from "@/components/editor/FloatingToolbar";
+import { PageCanvas } from "@/components/editor/PageCanvas";
+import { ColorModal } from "@/components/editor/modals/ColorModal";
+import { BoardBackgroundModal } from "@/components/editor/modals/BoardBackgroundModal";
+import { PagesModal } from "@/components/editor/modals/PagesModal";
+import { SizeModal } from "@/components/editor/modals/SizeModal";
+import { ToolbarLayoutModal } from "@/components/editor/modals/ToolbarLayoutModal";
+import { useCanvasInteractions } from "@/hooks/useCanvasInteractions";
+import { useEditorPageState } from "@/hooks/useEditorPageState";
+import { useNotePersistence } from "@/hooks/useNotePersistence";
+import { getCanvasSize } from "@/lib/editorGeometry";
+import type {
+  InfiniteBoard,
+  InfiniteBoardBackgroundStyle,
+  NoteKind,
+} from "@/lib/noteDocument";
+import { EMPTY_PAGE_BACKGROUND } from "@/lib/editorTypes";
+import { PanResponder, Platform, Pressable, Text, View } from "react-native";
+
+// Theme
+const WORKSPACE_BG = "#ECEDEF";
+const TOPBAR_BORDER = "rgba(22,26,33,0.12)";
+
+const PAGE_BG = "#ffffff";
+const TOOLBAR_MIN_TOP = 72;
+
+const ERASER_MULT = 10;
+
+const MIN_DIST_PX = 2;
+const MIN_POINTS_TO_SAVE = 3;
+const STROKE_SMOOTHING_ALPHA = 0.38;
+
+const SIZE_OPTIONS: { label: string; width: number }[] = [
+  { label: "1", width: 3 },
+  { label: "2", width: 4 },
+  { label: "3", width: 5 },
+  { label: "4", width: 6 },
+  { label: "5", width: 7 },
+];
+
+const DEFAULT_SLOTS: string[] = [
+  "#111111",
+  "#FFFFFF",
+  "#FF3B30",
+  "#FF9500",
+  "#FFCC00",
+  "#34C759",
+  "#007AFF",
+  "#5856D6",
+  "#AF52DE",
+  "#FF2D55",
+];
+
+const INFINITE_EDGE_TRIGGER = 220;
+const INFINITE_EXPAND_X = 1200;
+const INFINITE_EXPAND_Y = 900;
+const EMPTY_SELECTED_SET = new Set<string>();
+
+function clamp(n: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+function formatSaveLabel(
+  saveState: "idle" | "dirty" | "saving" | "saved" | "error",
+  recoveredFromDraft: boolean,
+) {
+  if (recoveredFromDraft) return "Recovered draft";
+  if (saveState === "saving") return "Saving";
+  if (saveState === "dirty") return "Unsaved";
+  if (saveState === "saved") return "Saved";
+  if (saveState === "error") return "Save failed";
+  return "All changes saved";
+}
+
+function normalizeNoteId(x: unknown): string | null {
+  if (typeof x === "string" && x.trim()) return x;
+  if (Array.isArray(x) && typeof x[0] === "string" && x[0].trim()) return x[0];
+  return null;
+}
+
+const TOOL_HINTS = {
+  pen: "Draw naturally. Double-tap Pen to change stroke size.",
+  eraser: "Erase by scrubbing over strokes. Double-tap Eraser to change size.",
+  lasso: "Loop strokes to select them, then drag or delete the selection.",
+} satisfies Record<"pen" | "eraser" | "lasso", string>;
+
+export default function EditorScreen() {
+  const router = useRouter();
+  const params = useLocalSearchParams();
+  const routeNoteId = normalizeNoteId((params as any)?.noteId);
+
+  // Tool
+  const [tool, setTool] = useState<"pen" | "eraser" | "lasso">("pen");
+  const [dismissedToolHints, setDismissedToolHints] = useState<
+    Record<"pen" | "eraser" | "lasso", boolean>
+  >({
+    pen: false,
+    eraser: false,
+    lasso: false,
+  });
+  const [exportFeedback, setExportFeedback] = useState<{
+    tone: "idle" | "success" | "error";
+    message: string;
+  }>({
+    tone: "idle",
+    message: "",
+  });
+
+  // Toolbar drag + orientation
+  const [toolbarOrientation, setToolbarOrientation] = useState<
+    "horizontal" | "vertical"
+  >("vertical");
+  const [isToolbarModeOpen, setIsToolbarModeOpen] = useState(false);
+
+  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
+  const [toolbarSize, setToolbarSize] = useState({ w: 0, h: 0 });
+
+  // toolbar position (absolute)
+  const [toolbarPos, setToolbarPos] = useState({ x: 12, y: 72 });
+
+  const toolbarPosRef = useRef(toolbarPos);
+  useEffect(() => {
+    toolbarPosRef.current = toolbarPos;
+  }, [toolbarPos]);
+
+  // double-tap on the 3-dot handle
+  const lastHandleTapMs = useRef<number>(0);
+  const movedDuringDrag = useRef(false);
+  const toolbarDragStart = useRef<{ x: number; y: number } | null>(null);
+
+  // Tool sizes (separate pen/eraser)
+  const [penSizeIndex, setPenSizeIndex] = useState(0);
+  const [eraserSizeIndex, setEraserSizeIndex] = useState(2);
+  const penWidth = SIZE_OPTIONS[penSizeIndex].width;
+  const eraserWidth = SIZE_OPTIONS[eraserSizeIndex].width * ERASER_MULT;
+  const [isSizeModalOpen, setIsSizeModalOpen] = useState(false);
+  const [sizeModalTool, setSizeModalTool] = useState<"pen" | "eraser">("pen");
+  const lastPenTapMs = useRef(0);
+  const lastEraserTapMs = useRef(0);
+
+  // Pen color
+  const [hue, setHue] = useState(0);
+  const [penColor, setPenColor] = useState<string>("#111111");
+  const [isColorModalOpen, setIsColorModalOpen] = useState(false);
+
+  // Saved slots
+  const [colorSlots, setColorSlots] = useState<string[]>(DEFAULT_SLOTS);
+  const [activeSlotIndex, setActiveSlotIndex] = useState<number | null>(null);
+  const [isPagesModalOpen, setIsPagesModalOpen] = useState(false);
+
+  // Effective settings depend on tool
+  const activeColor = tool === "eraser" ? PAGE_BG : penColor;
+  const activeWidth = tool === "eraser" ? eraserWidth : penWidth;
+  const eraserRadius = activeWidth / 2;
+
+  // Option B refs (latest brush settings)
+  const activeColorRef = useRef(activeColor);
+  const activeWidthRef = useRef(activeWidth);
+  useEffect(() => {
+    activeColorRef.current = activeColor;
+    activeWidthRef.current = activeWidth;
+  }, [activeColor, activeWidth]);
+
+  // Zoom
+  const [zoom, setZoom] = useState(1);
+  const clampZoom = useCallback(
+    (z: number) => Math.max(0.5, Math.min(2.5, z)),
+    [],
+  );
+  const quantizeZoom = useCallback((z: number) => Math.round(z * 100) / 100, []);
+  const zoomRef = useRef(1);
+  const workspaceRef = useRef<any>(null);
+  const wheelZoomRafRef = useRef<number | null>(null);
+  const wheelZoomAccumRef = useRef(0);
+  const wheelZoomFocusRef = useRef<{ x: number; y: number } | null>(null);
+  const [noteKind, setNoteKind] = useState<NoteKind>("page");
+  const [boardSize, setBoardSize] = useState<InfiniteBoard | null>(null);
+  const [boardBackgroundStyle, setBoardBackgroundStyle] =
+    useState<InfiniteBoardBackgroundStyle>("grid");
+  const canvasSize = useMemo(
+    () => boardSize ?? getCanvasSize(noteKind),
+    [boardSize, noteKind],
+  );
+  const isInfiniteCanvas = noteKind === "infinite";
+  const [isBoardBackgroundModalOpen, setIsBoardBackgroundModalOpen] =
+    useState(false);
+  const scrollContainerRef = useRef<any>(null);
+
+  useEffect(() => {
+    zoomRef.current = zoom;
+  }, [zoom]);
+
+  useEffect(() => {
+    if (!exportFeedback.message) return;
+    const timer = setTimeout(() => {
+      setExportFeedback({ tone: "idle", message: "" });
+    }, 2400);
+    return () => clearTimeout(timer);
+  }, [exportFeedback]);
+
+  // Strokes + current stroke
+  const {
+    strokes,
+    strokesRef,
+    updateCurrentPageStrokes,
+    commitCurrentPageStrokes,
+    commitCurrentPageHistory,
+    pages,
+    pageBackgrounds,
+    setPageBackgrounds,
+    currentPageIndex,
+    history,
+    historyIndex,
+    undo,
+    redo,
+    loadSnapshot,
+    selectPage,
+    addPageBelowCurrent,
+    removeCurrentPage,
+    movePage,
+  } = useEditorPageState({
+    emptyBackground: EMPTY_PAGE_BACKGROUND,
+  });
+  const canvasSizeRef = useRef(canvasSize);
+
+  // ---- Toolbar constraints
+  const clampToolbarPos = (x: number, y: number) => {
+    const maxX = Math.max(0, containerSize.w - toolbarSize.w);
+    const maxY = Math.max(0, containerSize.h - toolbarSize.h);
+    return {
+      x: clamp(x, 0, maxX),
+      y: clamp(y, TOOLBAR_MIN_TOP, maxY),
+    };
+  };
+
+  // When orientation changes, size changes -> keep toolbar in view
+  useEffect(() => {
+    setToolbarPos((p) => clampToolbarPos(p.x, p.y));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    toolbarOrientation,
+    containerSize.w,
+    containerSize.h,
+    toolbarSize.w,
+    toolbarSize.h,
+  ]);
+
+  useEffect(() => {
+    canvasSizeRef.current = canvasSize;
+  }, [canvasSize]);
+
+  // ---- Toolbar drag handle PanResponder (drag only on 3-dot handle)
+  const handlePanResponder = useMemo(() => {
+    return PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+
+      onPanResponderGrant: () => {
+        movedDuringDrag.current = false;
+        toolbarDragStart.current = toolbarPosRef.current;
+      },
+
+      onPanResponderMove: (_evt, gesture) => {
+        // gesture.dx/dy are cumulative from grant
+        if (Math.abs(gesture.dx) + Math.abs(gesture.dy) > 3) {
+          movedDuringDrag.current = true;
+        }
+
+        const base = toolbarDragStart.current ?? toolbarPosRef.current;
+        const next = clampToolbarPos(base.x + gesture.dx, base.y + gesture.dy);
+        setToolbarPos(next);
+      },
+
+      onPanResponderRelease: () => {
+        // If it wasn't a drag, treat as tap (for double-tap)
+        if (!movedDuringDrag.current) {
+          const now = Date.now();
+          if (now - lastHandleTapMs.current < 280) {
+            setIsToolbarModeOpen(true);
+          }
+          lastHandleTapMs.current = now;
+        }
+        toolbarDragStart.current = null;
+      },
+      onPanResponderTerminate: () => {
+        toolbarDragStart.current = null;
+      },
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [containerSize.w, containerSize.h, toolbarSize.w, toolbarSize.h]);
+
+  const {
+    currentPath,
+    eraserCursor,
+    lassoPath,
+    selectedIds,
+    selectedSet,
+    isPointerDown,
+    pageHandlersByPage,
+    deleteSelection,
+    resetCanvasState,
+    handleSelectPage,
+    handleAddPageBelowCurrent,
+    handleRemoveCurrentPage,
+    clearPenModeArtifacts,
+    clearEraserModeArtifacts,
+    clearLassoModeArtifacts,
+  } = useCanvasInteractions({
+    tool,
+    pages,
+    strokesRef,
+    updateCurrentPageStrokes,
+    commitCurrentPageStrokes,
+    commitCurrentPageHistory,
+    currentPageIndex,
+    selectPage,
+    addPageBelowCurrent,
+    removeCurrentPage,
+    activeWidthRef,
+    activeColorRef,
+    zoomRef,
+    canvasSizeRef,
+    isInfiniteCanvas,
+    setBoardSize,
+    minDistPx: MIN_DIST_PX,
+    minPointsToSave: MIN_POINTS_TO_SAVE,
+    strokeSmoothingAlpha: STROKE_SMOOTHING_ALPHA,
+    infiniteEdgeTrigger: INFINITE_EDGE_TRIGGER,
+    infiniteExpandX: INFINITE_EXPAND_X,
+    infiniteExpandY: INFINITE_EXPAND_Y,
+  });
+
+  const {
+    saveState,
+    saveError,
+    recoveredFromDraft,
+    retrySave,
+    dismissRecoveredFromDraft,
+  } = useNotePersistence({
+    routeNoteId,
+    router,
+    isPointerDownRef: isPointerDown,
+    pages,
+    pageBackgrounds,
+    currentPageIndex,
+    strokes,
+    noteKind,
+    boardSize,
+    boardBackgroundStyle,
+    emptyBackground: EMPTY_PAGE_BACKGROUND,
+    resetCanvasState,
+    setNoteKind,
+    setBoardSize,
+    setBoardBackgroundStyle,
+    loadSnapshot,
+  });
+
+  const applyZoomWithFocus = useCallback(
+    (targetZoom: number, focusX?: number, focusY?: number) => {
+      const nextZoom = clampZoom(targetZoom);
+      const container = scrollContainerRef.current as any;
+      const prevZoom = zoomRef.current;
+
+      if (
+        !container ||
+        typeof container.scrollLeft !== "number" ||
+        typeof container.scrollTop !== "number" ||
+        focusX == null ||
+        focusY == null
+      ) {
+        setZoom(nextZoom);
+        return;
+      }
+
+      const contentX = (container.scrollLeft + focusX) / prevZoom;
+      const contentY = (container.scrollTop + focusY) / prevZoom;
+
+      setZoom(nextZoom);
+
+      requestAnimationFrame(() => {
+        container.scrollLeft = contentX * nextZoom - focusX;
+        container.scrollTop = contentY * nextZoom - focusY;
+      });
+    },
+    [clampZoom],
+  );
+
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+
+    const workspaceEl = workspaceRef.current as any;
+    if (!workspaceEl?.addEventListener) return;
+
+    const flushWheelZoom = () => {
+      wheelZoomRafRef.current = null;
+      const dy = wheelZoomAccumRef.current;
+      const focus = wheelZoomFocusRef.current;
+      wheelZoomAccumRef.current = 0;
+
+      if (!Number.isFinite(dy) || dy === 0) return;
+
+      applyZoomWithFocus(
+        zoomRef.current * Math.exp((-dy * 0.0052)),
+        focus?.x,
+        focus?.y,
+      );
+    };
+
+    const onWheel = (ev: WheelEvent) => {
+      if (!ev.ctrlKey) return;
+
+      ev.preventDefault();
+
+      const dy = Number(ev.deltaY ?? 0);
+      if (!Number.isFinite(dy) || dy === 0) return;
+
+      const rect = workspaceEl.getBoundingClientRect?.();
+      if (
+        rect &&
+        typeof ev.clientX === "number" &&
+        typeof ev.clientY === "number"
+      ) {
+        wheelZoomFocusRef.current = {
+          x: ev.clientX - rect.left,
+          y: ev.clientY - rect.top,
+        };
+      }
+
+      wheelZoomAccumRef.current += dy;
+
+      if (wheelZoomRafRef.current != null) return;
+      wheelZoomRafRef.current = requestAnimationFrame(flushWheelZoom);
+    };
+
+    workspaceEl.addEventListener("wheel", onWheel, { passive: false });
+
+    return () => {
+      workspaceEl.removeEventListener("wheel", onWheel);
+      if (wheelZoomRafRef.current != null) {
+        cancelAnimationFrame(wheelZoomRafRef.current);
+        wheelZoomRafRef.current = null;
+      }
+      wheelZoomAccumRef.current = 0;
+      wheelZoomFocusRef.current = null;
+    };
+  }, [applyZoomWithFocus]);
+
+  const animateZoomTo = useCallback(
+    (targetZoom: number) => {
+      const container = scrollContainerRef.current as any;
+      const focusX =
+        container && typeof container.clientWidth === "number"
+          ? container.clientWidth / 2
+          : undefined;
+      const focusY =
+        container && typeof container.clientHeight === "number"
+          ? container.clientHeight / 2
+          : undefined;
+      applyZoomWithFocus(clampZoom(quantizeZoom(targetZoom)), focusX, focusY);
+    },
+    [applyZoomWithFocus, clampZoom, quantizeZoom],
+  );
+
+  const exportAsPdf = async () => {
+    try {
+      const { exportNoteAsPdf } = await import("@/lib/editorExport");
+      await exportNoteAsPdf({
+        pages,
+        pageBackgrounds,
+        currentPageIndex,
+        activePageStrokes: strokes,
+        noteKind,
+        pageWidth: canvasSize.width,
+        pageHeight: canvasSize.height,
+      });
+      setExportFeedback({
+        tone: "success",
+        message:
+          Platform.OS === "web"
+            ? "PDF export opened the print dialog."
+            : "PDF export is currently available on web.",
+      });
+    } catch (error: any) {
+      setExportFeedback({
+        tone: "error",
+        message:
+          typeof error?.message === "string" && error.message.trim()
+            ? error.message.trim()
+            : "Could not export this note as a PDF.",
+      });
+    }
+  };
+
+  const activeToolHint = dismissedToolHints[tool] ? null : TOOL_HINTS[tool];
+
+  return (
+    <View
+      style={{ flex: 1, backgroundColor: WORKSPACE_BG }}
+      onLayout={(e) => {
+        const { width, height } = e.nativeEvent.layout;
+        setContainerSize({ w: width, h: height });
+        // keep toolbar in view if container changes (rotate / resize)
+        setToolbarPos((p) => {
+          const next = clampToolbarPos(p.x, p.y);
+          return next;
+        });
+      }}
+    >
+      <Pressable
+        onPress={() => {
+          router.push("/(tabs)/explore");
+        }}
+        style={{
+          position: "absolute",
+          left: 14,
+          top: 14,
+          zIndex: 70,
+          height: 42,
+          paddingHorizontal: 14,
+          borderRadius: 12,
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 6,
+          backgroundColor: "rgba(255,255,255,0.94)",
+          borderWidth: 1,
+          borderColor: TOPBAR_BORDER,
+          shadowColor: "#000",
+          shadowOpacity: 0.12,
+          shadowRadius: 8,
+          shadowOffset: { width: 0, height: 3 },
+          boxShadow: "0 4px 16px rgba(0,0,0,0.14)",
+          backdropFilter: "blur(4px)",
+        }}
+      >
+        <ChevronLeft size={18} color="#121826" />
+        <Text style={{ color: "#121826", fontWeight: "900" }}>Back</Text>
+      </Pressable>
+
+      <Pressable
+        onPress={() => {
+          if (recoveredFromDraft) {
+            dismissRecoveredFromDraft();
+            return;
+          }
+          if (saveState === "error") {
+            retrySave();
+          }
+        }}
+        disabled={!recoveredFromDraft && saveState !== "error"}
+        style={{
+          position: "absolute",
+          right: 14,
+          top: 14,
+          zIndex: 70,
+          minHeight: 42,
+          maxWidth: 220,
+          paddingHorizontal: 14,
+          paddingVertical: 10,
+          borderRadius: 12,
+          justifyContent: "center",
+          backgroundColor:
+            saveState === "error"
+              ? "rgba(255,59,48,0.96)"
+              : recoveredFromDraft
+                ? "rgba(245,158,11,0.96)"
+                : "rgba(255,255,255,0.94)",
+          borderWidth: 1,
+          borderColor:
+            saveState === "error"
+              ? "rgba(127,29,29,0.28)"
+              : recoveredFromDraft
+                ? "rgba(146,64,14,0.22)"
+                : TOPBAR_BORDER,
+          shadowColor: "#000",
+          shadowOpacity: 0.12,
+          shadowRadius: 8,
+          shadowOffset: { width: 0, height: 3 },
+          boxShadow: "0 4px 16px rgba(0,0,0,0.14)",
+          backdropFilter: "blur(4px)",
+        }}
+      >
+        <Text
+          style={{
+            color:
+              saveState === "error" ? "#fff" : recoveredFromDraft ? "#7C2D12" : "#121826",
+            fontWeight: "900",
+            fontSize: 12,
+          }}
+        >
+          {formatSaveLabel(saveState, recoveredFromDraft)}
+        </Text>
+        {saveState === "error" && saveError ? (
+          <Text style={{ color: "rgba(255,255,255,0.92)", marginTop: 2, fontSize: 11 }}>
+            Tap to retry
+          </Text>
+        ) : recoveredFromDraft ? (
+          <Text style={{ color: "#92400E", marginTop: 2, fontSize: 11 }}>
+            Tap to dismiss
+          </Text>
+        ) : null}
+      </Pressable>
+
+      {exportFeedback.message ? (
+        <View
+          style={{
+            position: "absolute",
+            right: 14,
+            top: 72,
+            zIndex: 70,
+            maxWidth: 260,
+            paddingHorizontal: 14,
+            paddingVertical: 10,
+            borderRadius: 12,
+            backgroundColor:
+              exportFeedback.tone === "error"
+                ? "rgba(255,59,48,0.94)"
+                : "rgba(21,128,61,0.92)",
+            borderWidth: 1,
+            borderColor:
+              exportFeedback.tone === "error"
+                ? "rgba(127,29,29,0.26)"
+                : "rgba(21,128,61,0.24)",
+          }}
+        >
+          <Text style={{ color: "#fff", fontWeight: "800", fontSize: 12 }}>
+            {exportFeedback.message}
+          </Text>
+        </View>
+      ) : null}
+
+      {activeToolHint ? (
+        <View
+          style={{
+            position: "absolute",
+            left: 14,
+            top: 72,
+            zIndex: 70,
+            maxWidth: 260,
+            paddingHorizontal: 14,
+            paddingVertical: 12,
+            borderRadius: 14,
+            backgroundColor: "rgba(255,255,255,0.96)",
+            borderWidth: 1,
+            borderColor: TOPBAR_BORDER,
+            shadowColor: "#000",
+            shadowOpacity: 0.12,
+            shadowRadius: 8,
+            shadowOffset: { width: 0, height: 3 },
+            boxShadow: "0 4px 16px rgba(0,0,0,0.14)",
+          }}
+        >
+          <Text style={{ color: "#121826", fontWeight: "900", fontSize: 12 }}>
+            {tool === "pen" ? "Pen tip" : tool === "eraser" ? "Eraser tip" : "Lasso tip"}
+          </Text>
+          <Text style={{ color: "rgba(20,26,34,0.72)", marginTop: 4, fontSize: 11 }}>
+            {activeToolHint}
+          </Text>
+          <Pressable
+            onPress={() =>
+              setDismissedToolHints((prev) => ({ ...prev, [tool]: true }))
+            }
+            style={{ marginTop: 8 }}
+          >
+            <Text style={{ color: "#2563EB", fontWeight: "900", fontSize: 11 }}>
+              Dismiss
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
+
+      {/* Floating, draggable toolbar */}
+      <FloatingToolbar
+        toolbarPos={toolbarPos}
+        toolbarOrientation={toolbarOrientation}
+        penColor={penColor}
+        tool={tool}
+        navLabel={isInfiniteCanvas ? "Board" : "Pages"}
+        navSubLabel={
+          isInfiniteCanvas
+            ? boardBackgroundStyle[0].toUpperCase() +
+              boardBackgroundStyle.slice(1)
+            : `${currentPageIndex + 1}/${Math.max(1, pages.length)}`
+        }
+        selectedCount={selectedIds.length}
+        zoom={zoom}
+        historyIndex={historyIndex}
+        historyLength={history.length}
+        onToolbarLayout={(size) => {
+          setToolbarSize(size);
+          setToolbarPos((p) => clampToolbarPos(p.x, p.y));
+        }}
+        handlePanHandlers={handlePanResponder.panHandlers}
+        onPenPress={() => {
+          const now = Date.now();
+          if (now - lastPenTapMs.current < 280) {
+            setTool("pen");
+            setSizeModalTool("pen");
+            setIsSizeModalOpen(true);
+          } else {
+            setTool("pen");
+            clearPenModeArtifacts();
+          }
+          lastPenTapMs.current = now;
+        }}
+        onEraserPress={() => {
+          const now = Date.now();
+          if (now - lastEraserTapMs.current < 280) {
+            setTool("eraser");
+            setSizeModalTool("eraser");
+            setIsSizeModalOpen(true);
+          } else {
+            setTool("eraser");
+            clearEraserModeArtifacts();
+          }
+          lastEraserTapMs.current = now;
+        }}
+        onLassoPress={() => {
+          setTool("lasso");
+          clearLassoModeArtifacts();
+        }}
+        onColorPress={() => setIsColorModalOpen(true)}
+        onPagesPress={() =>
+          isInfiniteCanvas
+            ? setIsBoardBackgroundModalOpen(true)
+            : setIsPagesModalOpen(true)
+        }
+        onExportPdf={exportAsPdf}
+        onDeleteSelection={deleteSelection}
+        onZoomOut={() => animateZoomTo(zoom - 0.01)}
+        onZoomReset={() => animateZoomTo(1)}
+        onZoomIn={() => animateZoomTo(zoom + 0.01)}
+        onUndo={undo}
+        onRedo={redo}
+      />
+
+      {/* Workspace */}
+      <View
+        ref={scrollContainerRef}
+        style={
+          Platform.OS === "web"
+            ? ({
+                flex: 1,
+                backgroundColor: WORKSPACE_BG,
+                overflow: "auto",
+              } as any)
+            : { flex: 1, backgroundColor: WORKSPACE_BG }
+        }
+      >
+        <View
+          ref={workspaceRef}
+          style={
+            Platform.OS === "web"
+              ? ({
+                  minHeight: "100%",
+                  minWidth: "100%",
+                  padding: 24,
+                  display: "flex",
+                  justifyContent: "flex-start",
+                  alignItems: isInfiniteCanvas ? "flex-start" : "center",
+                  gap: 26,
+                } as any)
+              : {
+                  minHeight: "100%",
+                  padding: 24,
+                  justifyContent: "flex-start",
+                  alignItems: isInfiniteCanvas ? "flex-start" : "center",
+                  gap: 26,
+                }
+          }
+        >
+          {pages.map((pageStrokes, pageIndex) => {
+            const pageIsActive = pageIndex === currentPageIndex;
+            const renderStrokes = pageIsActive ? strokes : pageStrokes;
+            const pageBackground = pageBackgrounds[pageIndex] ?? {
+              ...EMPTY_PAGE_BACKGROUND,
+            };
+            return (
+              <PageCanvas
+                key={`page-${pageIndex}`}
+                zoom={zoom}
+                pageIndex={pageIndex}
+                pageIsActive={pageIsActive}
+                noteKind={noteKind}
+                pageWidth={canvasSize.width}
+                pageHeight={canvasSize.height}
+                boardBackgroundStyle={boardBackgroundStyle}
+                pageBackground={pageBackground}
+                renderStrokes={renderStrokes}
+                selectedSet={pageIsActive ? selectedSet : EMPTY_SELECTED_SET}
+                currentPath={pageIsActive ? currentPath : ""}
+                activeColor={activeColor}
+                activeWidth={activeWidth}
+                lassoPath={pageIsActive ? lassoPath : ""}
+                tool={tool}
+                eraserCursor={pageIsActive ? eraserCursor : null}
+                eraserRadius={eraserRadius}
+                pageHandlers={pageHandlersByPage[pageIndex]}
+              />
+            );
+          })}
+        </View>
+      </View>
+
+      {/* Toolbar mode modal (opened by double-tap on 3-dot handle) */}
+      <ToolbarLayoutModal
+        visible={isToolbarModeOpen}
+        toolbarOrientation={toolbarOrientation}
+        onClose={() => setIsToolbarModeOpen(false)}
+        onSelectOrientation={(orientation) => {
+          setToolbarOrientation(orientation);
+          setIsToolbarModeOpen(false);
+        }}
+      />
+
+      {/* Pages modal */}
+      {!isInfiniteCanvas ? (
+        <PagesModal
+          visible={isPagesModalOpen}
+          pages={pages}
+          currentPageIndex={currentPageIndex}
+          onClose={() => setIsPagesModalOpen(false)}
+          onAddPage={handleAddPageBelowCurrent}
+          onRemovePage={handleRemoveCurrentPage}
+          onSelectPage={handleSelectPage}
+          onMovePage={movePage}
+        />
+      ) : null}
+
+      <BoardBackgroundModal
+        visible={isBoardBackgroundModalOpen}
+        value={boardBackgroundStyle}
+        onClose={() => setIsBoardBackgroundModalOpen(false)}
+        onSelect={(value) => {
+          setBoardBackgroundStyle(value);
+          setBoardSize((prev) =>
+            prev ? { ...prev, backgroundStyle: value } : prev,
+          );
+          setIsBoardBackgroundModalOpen(false);
+        }}
+      />
+
+      {/* Size modal */}
+      <SizeModal
+        visible={isSizeModalOpen}
+        sizeModalTool={sizeModalTool}
+        sizeOptions={SIZE_OPTIONS}
+        penSizeIndex={penSizeIndex}
+        eraserSizeIndex={eraserSizeIndex}
+        eraserMultiplier={ERASER_MULT}
+        onClose={() => setIsSizeModalOpen(false)}
+        onSelectPenSize={setPenSizeIndex}
+        onSelectEraserSize={setEraserSizeIndex}
+      />
+
+      {/* Color modal (Hue slider + slots) */}
+      <ColorModal
+        visible={isColorModalOpen}
+        hue={hue}
+        penColor={penColor}
+        colorSlots={colorSlots}
+        activeSlotIndex={activeSlotIndex}
+        tool={tool}
+        onClose={() => setIsColorModalOpen(false)}
+        onHueChange={(nextHue, nextColor) => {
+          setHue(nextHue);
+          setPenColor(nextColor);
+          setActiveSlotIndex(null);
+        }}
+        onActivatePenTool={() => setTool("pen")}
+        onSetPenColor={setPenColor}
+        onSetColorSlots={setColorSlots}
+        onSetActiveSlotIndex={setActiveSlotIndex}
+      />
+    </View>
+  );
+}

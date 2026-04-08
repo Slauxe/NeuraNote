@@ -14,9 +14,9 @@ import { Pressable, Text, View } from "react-native";
 import { EditorIconButton } from "@/components/editor/EditorIconButton";
 
 const TOPBAR_BG = "rgba(255,255,255,0.92)";
-const TOPBAR_BORDER = "rgba(22,26,33,0.12)";
-const BTN_BG = "rgba(20,26,34,0.05)";
-const BTN_BORDER = "rgba(20,26,34,0.16)";
+const TOPBAR_BORDER = "rgba(22,26,33,0.08)";
+const BTN_BG = "rgba(255,255,255,0.02)";
+const BTN_BORDER = "rgba(20,26,34,0.08)";
 
 type Tool = "pen" | "eraser" | "lasso";
 
@@ -75,17 +75,31 @@ export function FloatingToolbar({
 }: FloatingToolbarProps) {
   const iconOn = "#0B1026";
   const iconOff = "rgba(12,18,28,0.86)";
+  const dividerStyle =
+    toolbarOrientation === "horizontal"
+      ? ({
+          width: 1,
+          alignSelf: "stretch",
+          backgroundColor: "rgba(20,26,34,0.08)",
+          marginHorizontal: 2,
+        } as const)
+      : ({
+          height: 1,
+          alignSelf: "stretch",
+          backgroundColor: "rgba(20,26,34,0.08)",
+          marginVertical: 2,
+        } as const);
   const toolbarRow =
     toolbarOrientation === "horizontal"
       ? ({
           flexDirection: "row",
           alignItems: "center",
-          gap: 10,
+          gap: 6,
         } as const)
       : ({
           flexDirection: "column",
           alignItems: "center",
-          gap: 10,
+          gap: 6,
         } as const);
 
   return (
@@ -105,17 +119,17 @@ export function FloatingToolbar({
       <View
         style={[
           {
-            padding: 8,
-            borderRadius: 18,
+            padding: 6,
+            borderRadius: 22,
             borderWidth: 1,
             borderColor: TOPBAR_BORDER,
             backgroundColor: TOPBAR_BG,
             shadowColor: "#000",
-            shadowOpacity: 0.12,
-            shadowRadius: 10,
-            shadowOffset: { width: 0, height: 5 },
-            boxShadow: "0 8px 24px rgba(0,0,0,0.16)",
-            backdropFilter: "blur(4px)",
+            shadowOpacity: 0.08,
+            shadowRadius: 18,
+            shadowOffset: { width: 0, height: 8 },
+            boxShadow: "0 14px 32px rgba(15,23,42,0.10)",
+            backdropFilter: "blur(12px)",
           },
           toolbarRow,
         ]}
@@ -123,17 +137,17 @@ export function FloatingToolbar({
         <View
           {...handlePanHandlers}
           style={{
-            width: 46,
-            height: 46,
-            borderRadius: 14,
+            width: 38,
+            height: 38,
+            borderRadius: 12,
             alignItems: "center",
             justifyContent: "center",
             backgroundColor: BTN_BG,
             borderWidth: 1,
-            borderColor: "rgba(20,26,34,0.14)",
+            borderColor: BTN_BORDER,
           }}
         >
-          <MoreVertical size={20} color={iconOff} />
+          <MoreVertical size={18} color="rgba(12,18,28,0.68)" />
         </View>
 
         <EditorIconButton onPress={onPenPress} active={tool === "pen"}>
@@ -157,14 +171,16 @@ export function FloatingToolbar({
           <Palette size={20} color="#ffffff" />
         </EditorIconButton>
 
+        <View style={dividerStyle} />
+
         <EditorIconButton onPress={onPagesPress}>
           <View style={{ alignItems: "center", justifyContent: "center" }}>
             <Text
               style={{
                 color: iconOff,
                 fontWeight: "900",
-                fontSize: 12,
-                lineHeight: 14,
+                fontSize: 11,
+                lineHeight: 12,
               }}
             >
               {navLabel}
@@ -172,8 +188,8 @@ export function FloatingToolbar({
             <Text
               style={{
                 color: "rgba(20,26,34,0.72)",
-                fontSize: 10,
-                lineHeight: 12,
+                fontSize: 9,
+                lineHeight: 10,
               }}
             >
               {navSubLabel}
@@ -200,19 +216,21 @@ export function FloatingToolbar({
           </EditorIconButton>
         ) : null}
 
+        <View style={dividerStyle} />
+
         <View
           style={
             toolbarOrientation === "horizontal"
-              ? ({ flexDirection: "row", gap: 8, marginLeft: 6 } as const)
-              : ({ flexDirection: "column", gap: 8, marginTop: 6 } as const)
+              ? ({ flexDirection: "row", gap: 6 } as const)
+              : ({ flexDirection: "column", gap: 6 } as const)
           }
         >
           <Pressable
             onPress={onZoomOut}
             style={{
-              width: 46,
-              height: 46,
-              borderRadius: 14,
+              width: 42,
+              height: 42,
+              borderRadius: 12,
               alignItems: "center",
               justifyContent: "center",
               backgroundColor: BTN_BG,
@@ -228,9 +246,10 @@ export function FloatingToolbar({
           <Pressable
             onPress={onZoomReset}
             style={{
-              height: 46,
-              paddingHorizontal: 14,
-              borderRadius: 14,
+              height: 42,
+              minWidth: 68,
+              paddingHorizontal: 12,
+              borderRadius: 12,
               alignItems: "center",
               justifyContent: "center",
               backgroundColor: BTN_BG,
@@ -246,9 +265,9 @@ export function FloatingToolbar({
           <Pressable
             onPress={onZoomIn}
             style={{
-              width: 46,
-              height: 46,
-              borderRadius: 14,
+              width: 42,
+              height: 42,
+              borderRadius: 12,
               alignItems: "center",
               justifyContent: "center",
               backgroundColor: BTN_BG,
@@ -262,11 +281,13 @@ export function FloatingToolbar({
           </Pressable>
         </View>
 
+        <View style={dividerStyle} />
+
         <View
           style={
             toolbarOrientation === "horizontal"
-              ? ({ flexDirection: "row", gap: 8, marginLeft: 6 } as const)
-              : ({ flexDirection: "column", gap: 8, marginTop: 6 } as const)
+              ? ({ flexDirection: "row", gap: 6 } as const)
+              : ({ flexDirection: "column", gap: 6 } as const)
           }
         >
           <EditorIconButton onPress={onUndo} disabled={historyIndex <= 0}>

@@ -10,11 +10,13 @@ export type NotePage = {
   id?: string;
   strokes: unknown[];
   backgroundDataUrl?: string;
+  backgroundAssetId?: string;
   backgroundPdfUri?: string;
   backgroundPdfPageNumber?: number;
 };
 
 export type NoteDoc = {
+  version?: 1;
   kind?: NoteKind;
   board?: InfiniteBoard;
   strokes: unknown[];
@@ -24,6 +26,7 @@ export type NoteDoc = {
 
 export function createEmptyNoteDoc(kind: NoteKind = "page"): NoteDoc {
   return {
+    version: 1,
     kind,
     strokes: [],
     pages: [{ id: "page-1", strokes: [] }],

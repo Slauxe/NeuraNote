@@ -6,11 +6,12 @@ import {
   Rect as SkiaRect,
   Skia,
 } from "@shopify/react-native-skia";
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Image, Platform, Text, View } from "react-native";
 import Svg, { Circle, G, Path, Rect } from "react-native-svg";
 
 import PdfPageBackground from "../PdfPageBackground";
+import { getBackgroundAsset } from "@/lib/webBackgroundAssets";
 import {
   INFINITE_CANVAS_H,
   INFINITE_CANVAS_W,
@@ -26,6 +27,44 @@ const IS_WEB = Platform.OS === "web";
 const DASH_INTERVALS = [6, 6];
 const PAGE_BG = "#ffffff";
 const PAGE_BORDER = "rgba(20,26,34,0.18)";
+
+function useResolvedBackgroundUrl(pageBackground: PageBackground) {
+  const [resolvedUrl, setResolvedUrl] = useState<string | null>(
+    pageBackground.dataUrl,
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (pageBackground.dataUrl) {
+      setResolvedUrl(pageBackground.dataUrl);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (Platform.OS !== "web" || !pageBackground.assetId) {
+      setResolvedUrl(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    getBackgroundAsset(pageBackground.assetId)
+      .then((url) => {
+        if (!cancelled) setResolvedUrl(url);
+      })
+      .catch(() => {
+        if (!cancelled) setResolvedUrl(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pageBackground.assetId, pageBackground.dataUrl]);
+
+  return resolvedUrl;
+}
 
 function StrokePathNode({
   d,
@@ -420,9 +459,11 @@ function PageCanvasInner({
   const showBoardPattern =
     isInfiniteCanvas &&
     !pageBackground.dataUrl &&
+    !pageBackground.assetId &&
     !pageBackground.pdfUri &&
     pageWidth >= INFINITE_CANVAS_W &&
     pageHeight >= INFINITE_CANVAS_H;
+  const resolvedBackgroundUrl = useResolvedBackgroundUrl(pageBackground);
 
   const boardPatternStyle =
     boardBackgroundStyle === "blank"
@@ -501,9 +542,9 @@ function PageCanvasInner({
           {showBoardPattern && boardPatternStyle ? (
             <View style={boardPatternStyle} />
           ) : null}
-          {pageBackground.dataUrl ? (
+          {resolvedBackgroundUrl ? (
             <Image
-              source={{ uri: pageBackground.dataUrl }}
+              source={{ uri: resolvedBackgroundUrl }}
               style={{
                 position: "absolute",
                 left: 0,
@@ -514,7 +555,7 @@ function PageCanvasInner({
               resizeMode="cover"
             />
           ) : null}
-          {!pageBackground.dataUrl &&
+          {!resolvedBackgroundUrl &&
           pageBackground.pdfUri &&
           pageBackground.pdfPageNumber ? (
             <PdfPageBackground

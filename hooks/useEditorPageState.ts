@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { PageBackground, Stroke } from "@/lib/editorTypes";
 
@@ -6,76 +6,228 @@ type UseEditorPageStateArgs = {
   emptyBackground: PageBackground;
 };
 
+type PageHistoryState = {
+  entries: Stroke[][];
+  index: number;
+};
+
+const MAX_HISTORY_ENTRIES = 100;
+
+function cloneStroke(stroke: Stroke): Stroke {
+  return {
+    ...stroke,
+    points: stroke.points.map((point) => ({ ...point })),
+    bbox: { ...stroke.bbox },
+  };
+}
+
+function cloneStrokeSnapshot(strokes: Stroke[]): Stroke[] {
+  return strokes.map(cloneStroke);
+}
+
+function buildInitialHistories(pages: Stroke[][]): PageHistoryState[] {
+  const safePages = pages.length > 0 ? pages : [[]];
+  return safePages.map((page) => ({
+    entries: [cloneStrokeSnapshot(page)],
+    index: 0,
+  }));
+}
+
+function pushHistoryEntry(
+  history: PageHistoryState,
+  snapshot: Stroke[],
+): PageHistoryState {
+  const nextEntries = [
+    ...history.entries.slice(0, history.index + 1),
+    cloneStrokeSnapshot(snapshot),
+  ];
+
+  if (nextEntries.length <= MAX_HISTORY_ENTRIES) {
+    return {
+      entries: nextEntries,
+      index: nextEntries.length - 1,
+    };
+  }
+
+  const trimmedEntries = nextEntries.slice(
+    nextEntries.length - MAX_HISTORY_ENTRIES,
+  );
+  return {
+    entries: trimmedEntries,
+    index: trimmedEntries.length - 1,
+  };
+}
+
 export function useEditorPageState({
   emptyBackground,
 }: UseEditorPageStateArgs) {
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const strokesRef = useRef<Stroke[]>([]);
   const [pages, setPages] = useState<Stroke[][]>([[]]);
+  const pagesRef = useRef<Stroke[][]>([[]]);
   const [pageBackgrounds, setPageBackgrounds] = useState<PageBackground[]>([
     { ...emptyBackground },
   ]);
   const [currentPageIndex, setCurrentPageIndex] = useState(0);
-  const [history, setHistory] = useState<Stroke[][]>([[]]);
-  const [historyIndex, setHistoryIndex] = useState(0);
+  const currentPageIndexRef = useRef(0);
+  const [pageHistories, setPageHistories] = useState<PageHistoryState[]>([
+    { entries: [[]], index: 0 },
+  ]);
+  const pageHistoriesRef = useRef<PageHistoryState[]>([
+    { entries: [[]], index: 0 },
+  ]);
 
   useEffect(() => {
     strokesRef.current = strokes;
   }, [strokes]);
 
   useEffect(() => {
-    setPages((prev) => {
-      const base = prev.length > 0 ? prev : [[]];
-      const idx = Math.max(0, Math.min(currentPageIndex, base.length - 1));
-      if (base[idx] === strokes) return base;
-      const next = base.slice();
-      next[idx] = strokes;
-      return next;
-    });
-  }, [strokes, currentPageIndex]);
+    pagesRef.current = pages;
+  }, [pages]);
 
-  const pushHistory = (newStrokes: Stroke[]) => {
-    setHistory((prev) => {
-      const newIndex = historyIndex + 1;
-      return [...prev.slice(0, newIndex), newStrokes];
-    });
-    setHistoryIndex((prev) => prev + 1);
-  };
+  useEffect(() => {
+    currentPageIndexRef.current = currentPageIndex;
+  }, [currentPageIndex]);
+
+  useEffect(() => {
+    pageHistoriesRef.current = pageHistories;
+  }, [pageHistories]);
+
+  const syncCurrentPageState = useCallback(
+    (nextIndex: number, nextStrokes: Stroke[]) => {
+      currentPageIndexRef.current = nextIndex;
+      strokesRef.current = nextStrokes;
+      setCurrentPageIndex(nextIndex);
+      setStrokes(nextStrokes);
+    },
+    [],
+  );
+
+  const updateCurrentPageStrokes = useCallback(
+    (next:
+      | Stroke[]
+      | ((prev: Stroke[]) => Stroke[])) => {
+      const pageIndex = currentPageIndexRef.current;
+      const previousStrokes = strokesRef.current;
+      const resolved =
+        typeof next === "function"
+          ? (next as (prev: Stroke[]) => Stroke[])(previousStrokes)
+          : next;
+
+      if (resolved === previousStrokes) return previousStrokes;
+
+      const nextPages = (pagesRef.current.length > 0 ? pagesRef.current : [[]]).slice();
+      nextPages[pageIndex] = resolved;
+      pagesRef.current = nextPages;
+      strokesRef.current = resolved;
+      setPages(nextPages);
+      setStrokes(resolved);
+      return resolved;
+    },
+    [],
+  );
+
+  const commitCurrentPageHistory = useCallback((snapshot?: Stroke[]) => {
+    const pageIndex = currentPageIndexRef.current;
+    const nextSnapshot = snapshot ?? strokesRef.current;
+    const nextHistories = pageHistoriesRef.current.slice();
+    const currentHistory = nextHistories[pageIndex] ?? {
+      entries: [cloneStrokeSnapshot(nextSnapshot)],
+      index: 0,
+    };
+    nextHistories[pageIndex] = pushHistoryEntry(currentHistory, nextSnapshot);
+    pageHistoriesRef.current = nextHistories;
+    setPageHistories(nextHistories);
+  }, []);
+
+  const commitCurrentPageStrokes = useCallback(
+    (next:
+      | Stroke[]
+      | ((prev: Stroke[]) => Stroke[])) => {
+      const resolved = updateCurrentPageStrokes(next);
+      commitCurrentPageHistory(resolved);
+      return resolved;
+    },
+    [commitCurrentPageHistory, updateCurrentPageStrokes],
+  );
+
+  const historyState = useMemo(() => {
+    return (
+      pageHistories[currentPageIndex] ?? {
+        entries: [cloneStrokeSnapshot(strokes)],
+        index: 0,
+      }
+    );
+  }, [currentPageIndex, pageHistories, strokes]);
+
+  const history = historyState.entries;
+  const historyIndex = historyState.index;
 
   const undo = () => {
-    if (historyIndex > 0) {
-      const newIndex = historyIndex - 1;
-      setHistoryIndex(newIndex);
-      setStrokes(history[newIndex]);
-    }
+    const pageIndex = currentPageIndexRef.current;
+    const currentHistory = pageHistoriesRef.current[pageIndex];
+    if (!currentHistory || currentHistory.index <= 0) return;
+
+    const nextIndex = currentHistory.index - 1;
+    const nextSnapshot = cloneStrokeSnapshot(currentHistory.entries[nextIndex] ?? []);
+    const nextHistories = pageHistoriesRef.current.slice();
+    nextHistories[pageIndex] = {
+      entries: currentHistory.entries,
+      index: nextIndex,
+    };
+    pageHistoriesRef.current = nextHistories;
+    setPageHistories(nextHistories);
+    updateCurrentPageStrokes(nextSnapshot);
   };
 
   const redo = () => {
-    if (historyIndex < history.length - 1) {
-      const newIndex = historyIndex + 1;
-      setHistoryIndex(newIndex);
-      setStrokes(history[newIndex]);
+    const pageIndex = currentPageIndexRef.current;
+    const currentHistory = pageHistoriesRef.current[pageIndex];
+    if (!currentHistory || currentHistory.index >= currentHistory.entries.length - 1) {
+      return;
     }
+
+    const nextIndex = currentHistory.index + 1;
+    const nextSnapshot = cloneStrokeSnapshot(currentHistory.entries[nextIndex] ?? []);
+    const nextHistories = pageHistoriesRef.current.slice();
+    nextHistories[pageIndex] = {
+      entries: currentHistory.entries,
+      index: nextIndex,
+    };
+    pageHistoriesRef.current = nextHistories;
+    setPageHistories(nextHistories);
+    updateCurrentPageStrokes(nextSnapshot);
   };
 
-  const loadSnapshot = ({
-    pages: nextPages,
-    pageBackgrounds: nextBackgrounds,
-    currentPageIndex: nextPageIndex,
-    strokes: nextStrokes,
-  }: {
-    pages: Stroke[][];
-    pageBackgrounds: PageBackground[];
-    currentPageIndex: number;
-    strokes: Stroke[];
-  }) => {
-    setPages(nextPages);
-    setPageBackgrounds(nextBackgrounds);
-    setCurrentPageIndex(nextPageIndex);
-    setStrokes(nextStrokes);
-    setHistory([nextStrokes]);
-    setHistoryIndex(0);
-  };
+  const loadSnapshot = useCallback(
+    ({
+      pages: nextPages,
+      pageBackgrounds: nextBackgrounds,
+      currentPageIndex: nextPageIndex,
+      strokes: nextStrokes,
+    }: {
+      pages: Stroke[][];
+      pageBackgrounds: PageBackground[];
+      currentPageIndex: number;
+      strokes: Stroke[];
+    }) => {
+      const safePages = nextPages.length > 0 ? nextPages : [[]];
+      const clampedIndex = Math.max(
+        0,
+        Math.min(safePages.length - 1, nextPageIndex),
+      );
+      const pageSnapshot = nextStrokes ?? safePages[clampedIndex] ?? [];
+      const nextHistories = buildInitialHistories(safePages);
+
+      pagesRef.current = safePages;
+      pageHistoriesRef.current = nextHistories;
+      setPages(safePages);
+      setPageBackgrounds(nextBackgrounds);
+      setPageHistories(nextHistories);
+      syncCurrentPageState(clampedIndex, pageSnapshot);
+    },
+    [syncCurrentPageState],
+  );
 
   const clearAll = () => {
     loadSnapshot({
@@ -87,19 +239,19 @@ export function useEditorPageState({
   };
 
   const selectPage = (index: number, beforeSwitch: () => void) => {
-    const safePages = pages.length > 0 ? pages : [[]];
+    const safePages = pagesRef.current.length > 0 ? pagesRef.current : [[]];
     const nextIndex = Math.max(0, Math.min(safePages.length - 1, index));
-    const nextStrokes = safePages[nextIndex] ?? [];
+    const currentHistory = pageHistoriesRef.current[nextIndex];
+    const nextStrokes = cloneStrokeSnapshot(
+      currentHistory?.entries[currentHistory.index] ?? safePages[nextIndex] ?? [],
+    );
 
     beforeSwitch();
-    setCurrentPageIndex(nextIndex);
-    setStrokes(nextStrokes);
-    setHistory([nextStrokes]);
-    setHistoryIndex(0);
+    syncCurrentPageState(nextIndex, nextStrokes);
   };
 
   const addPageBelowCurrent = (beforeSwitch: () => void) => {
-    const safePages = pages.length > 0 ? pages : [[]];
+    const safePages = pagesRef.current.length > 0 ? pagesRef.current : [[]];
     const safeBackgrounds = safePages.map(
       (_, i) => pageBackgrounds[i] ?? { ...emptyBackground },
     );
@@ -117,18 +269,23 @@ export function useEditorPageState({
       { ...emptyBackground },
       ...safeBackgrounds.slice(insertAt),
     ];
+    const nextHistories = [
+      ...pageHistoriesRef.current.slice(0, insertAt),
+      { entries: [[]], index: 0 },
+      ...pageHistoriesRef.current.slice(insertAt),
+    ];
 
     beforeSwitch();
+    pagesRef.current = nextPages;
+    pageHistoriesRef.current = nextHistories;
     setPages(nextPages);
     setPageBackgrounds(nextBackgrounds);
-    setCurrentPageIndex(insertAt);
-    setStrokes([]);
-    setHistory([[]]);
-    setHistoryIndex(0);
+    setPageHistories(nextHistories);
+    syncCurrentPageState(insertAt, []);
   };
 
   const removeCurrentPage = (beforeSwitch: () => void) => {
-    const safePages = pages.length > 0 ? pages : [[]];
+    const safePages = pagesRef.current.length > 0 ? pagesRef.current : [[]];
     const safeBackgrounds = safePages.map(
       (_, i) => pageBackgrounds[i] ?? { ...emptyBackground },
     );
@@ -143,23 +300,29 @@ export function useEditorPageState({
     const nextBackgrounds = safeBackgrounds.filter(
       (_, i) => i !== currentPageIndex,
     );
+    const nextHistories = pageHistoriesRef.current.filter(
+      (_, i) => i !== currentPageIndex,
+    );
     const nextIndex = Math.max(
       0,
       Math.min(nextPages.length - 1, currentPageIndex),
     );
-    const nextStrokes = nextPages[nextIndex] ?? [];
+    const nextHistory = nextHistories[nextIndex];
+    const nextStrokes = cloneStrokeSnapshot(
+      nextHistory?.entries[nextHistory.index] ?? nextPages[nextIndex] ?? [],
+    );
 
     beforeSwitch();
+    pagesRef.current = nextPages;
+    pageHistoriesRef.current = nextHistories;
     setPages(nextPages);
     setPageBackgrounds(nextBackgrounds);
-    setCurrentPageIndex(nextIndex);
-    setStrokes(nextStrokes);
-    setHistory([nextStrokes]);
-    setHistoryIndex(0);
+    setPageHistories(nextHistories);
+    syncCurrentPageState(nextIndex, nextStrokes);
   };
 
   const movePage = (from: number, delta: -1 | 1) => {
-    const safePages = pages.length > 0 ? pages : [[]];
+    const safePages = pagesRef.current.length > 0 ? pagesRef.current : [[]];
     const safeBackgrounds = safePages.map(
       (_, i) => pageBackgrounds[i] ?? { ...emptyBackground },
     );
@@ -169,10 +332,13 @@ export function useEditorPageState({
 
     const nextPages = safePages.slice();
     const nextBackgrounds = safeBackgrounds.slice();
+    const nextHistories = pageHistoriesRef.current.slice();
     const [moved] = nextPages.splice(from, 1);
     const [movedBg] = nextBackgrounds.splice(from, 1);
+    const [movedHistory] = nextHistories.splice(from, 1);
     nextPages.splice(to, 0, moved);
     nextBackgrounds.splice(to, 0, movedBg ?? { ...emptyBackground });
+    nextHistories.splice(to, 0, movedHistory ?? { entries: [[]], index: 0 });
 
     let nextCurrentIndex = currentPageIndex;
     if (currentPageIndex === from) nextCurrentIndex = to;
@@ -182,15 +348,28 @@ export function useEditorPageState({
       nextCurrentIndex = currentPageIndex + 1;
     }
 
+    pagesRef.current = nextPages;
+    pageHistoriesRef.current = nextHistories;
     setPages(nextPages);
     setPageBackgrounds(nextBackgrounds);
-    setCurrentPageIndex(nextCurrentIndex);
+    setPageHistories(nextHistories);
+    syncCurrentPageState(
+      nextCurrentIndex,
+      cloneStrokeSnapshot(
+        nextHistories[nextCurrentIndex]?.entries[
+          nextHistories[nextCurrentIndex]?.index ?? 0
+        ] ?? nextPages[nextCurrentIndex] ?? [],
+      ),
+    );
   };
 
   return {
     strokes,
     setStrokes,
     strokesRef,
+    updateCurrentPageStrokes,
+    commitCurrentPageStrokes,
+    commitCurrentPageHistory,
     pages,
     setPages,
     pageBackgrounds,
@@ -198,10 +377,7 @@ export function useEditorPageState({
     currentPageIndex,
     setCurrentPageIndex,
     history,
-    setHistory,
     historyIndex,
-    setHistoryIndex,
-    pushHistory,
     undo,
     redo,
     loadSnapshot,

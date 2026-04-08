@@ -33,6 +33,9 @@ npm run android
 npm run ios
 npm run web
 npm run lint
+npm run typecheck
+npm test
+npm run check
 ```
 
 ## Storage Model
@@ -53,3 +56,14 @@ Notes are stored locally.
 - Split editor state management into smaller hooks and components
 - Move more serialization logic out of the editor screen
 - Add tests around note persistence and page/document normalization
+
+## Architecture Note
+
+Try to keep the app layered in this direction as refactors continue:
+
+- Route screens in `app/` should focus on composition, navigation, and UI wiring
+- Reusable interaction logic should live in hooks such as `useCanvasInteractions`, `useEditorPageState`, and `useNotePersistence`
+- Pure document, geometry, export, and persistence logic should stay in `lib/` so it can be tested without screen-level setup
+- Shared visual building blocks should live in `components/`, with platform splits kept local when native and web need different implementations
+
+If a screen starts accumulating data-shaping, persistence, and gesture logic at the same time, that is usually the signal to extract another hook or `lib/` helper before the file becomes the next monolith.

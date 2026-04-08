@@ -2,6 +2,7 @@ export type Point = { x: number; y: number };
 
 export type PageBackground = {
   dataUrl: string | null;
+  assetId: string | null;
   pdfUri: string | null;
   pdfPageNumber: number | null;
 };
@@ -24,6 +25,7 @@ export const INFINITE_CANVAS_H = 4000;
 
 export const EMPTY_PAGE_BACKGROUND: PageBackground = {
   dataUrl: null,
+  assetId: null,
   pdfUri: null,
   pdfPageNumber: null,
 };

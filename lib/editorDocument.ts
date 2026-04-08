@@ -147,6 +147,8 @@ export function normalizeDocToPages(rawDoc: any): {
     pageBackgrounds = rawPages.map((pg: any) => ({
       dataUrl:
         typeof pg?.backgroundDataUrl === "string" ? pg.backgroundDataUrl : null,
+      assetId:
+        typeof pg?.backgroundAssetId === "string" ? pg.backgroundAssetId : null,
       pdfUri:
         typeof pg?.backgroundPdfUri === "string" ? pg.backgroundPdfUri : null,
       pdfPageNumber: Number.isFinite(pg?.backgroundPdfPageNumber)
@@ -196,6 +198,7 @@ export function buildDocFromPages(
   );
 
   return {
+    version: 1,
     kind,
     ...(kind === "infinite" && board ? { board } : {}),
     strokes: safePages[clampedIndex] ?? [],
@@ -204,6 +207,9 @@ export function buildDocFromPages(
       strokes: p,
       ...(safeBackgrounds[i].dataUrl
         ? { backgroundDataUrl: safeBackgrounds[i].dataUrl as string }
+        : {}),
+      ...(safeBackgrounds[i].assetId
+        ? { backgroundAssetId: safeBackgrounds[i].assetId as string }
         : {}),
       ...(safeBackgrounds[i].pdfUri
         ? { backgroundPdfUri: safeBackgrounds[i].pdfUri as string }

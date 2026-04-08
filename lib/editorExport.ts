@@ -2,6 +2,7 @@ import { Platform } from "react-native";
 
 import { PAGE_H, PAGE_W, type PageBackground, type Stroke } from "@/lib/editorTypes";
 import type { NoteKind } from "@/lib/noteDocument";
+import { getBackgroundAsset } from "@/lib/webBackgroundAssets";
 
 const INFINITE_EXPORT_MARGIN = 64;
 
@@ -63,7 +64,7 @@ function getInfinitePageStyle(width: number, height: number) {
   return { widthIn: Math.max(1, 11 * ratio), heightIn: 11 };
 }
 
-export function exportNoteAsPdf({
+export async function exportNoteAsPdf({
   pages,
   pageBackgrounds,
   currentPageIndex,
@@ -88,11 +89,12 @@ export function exportNoteAsPdf({
           (_, i) =>
             pageBackgrounds[i] ?? {
               dataUrl: null,
+              assetId: null,
               pdfUri: null,
               pdfPageNumber: null,
             },
         )
-      : [{ dataUrl: null, pdfUri: null, pdfPageNumber: null }];
+      : [{ dataUrl: null, assetId: null, pdfUri: null, pdfPageNumber: null }];
   const idx = Math.max(
     0,
     Math.min(snapshotPages.length - 1, currentPageIndex),
@@ -103,9 +105,17 @@ export function exportNoteAsPdf({
     return;
   }
 
+  const resolvedBackgroundUrls = await Promise.all(
+    snapshotBackgrounds.map(async (background) => {
+      if (background?.dataUrl) return background.dataUrl;
+      if (background?.assetId) return getBackgroundAsset(background.assetId);
+      return null;
+    }),
+  );
+
   const pageSvgs = snapshotPages
     .map((pageStrokes, pageIndex) => {
-      const bg = snapshotBackgrounds[pageIndex];
+      const resolvedBackgroundUrl = resolvedBackgroundUrls[pageIndex];
       const exportBounds =
         noteKind === "infinite"
           ? getInfiniteExportBounds(pageStrokes, pageWidth, pageHeight)
@@ -121,8 +131,8 @@ export function exportNoteAsPdf({
           return `<path d="${d}" stroke="${c}" stroke-width="${stroke.w}" fill="none" stroke-linecap="round" stroke-linejoin="round" transform="translate(${stroke.dx} ${stroke.dy})" />`;
         })
         .join("");
-      const bgImg = bg?.dataUrl
-        ? `<img class="page-bg" src="${escapeHtml(bg.dataUrl)}" alt="" />`
+      const bgImg = resolvedBackgroundUrl
+        ? `<img class="page-bg" src="${escapeHtml(resolvedBackgroundUrl)}" alt="" />`
         : "";
 
       return `<div class="page"${
