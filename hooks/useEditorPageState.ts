@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { PageBackground, Stroke } from "@/lib/editorTypes";
+import type { NoteTextItem } from "@/lib/noteDocument";
 
 type UseEditorPageStateArgs = {
   emptyBackground: PageBackground;
@@ -17,6 +18,8 @@ function cloneStroke(stroke: Stroke): Stroke {
   return {
     ...stroke,
     points: stroke.points.map((point) => ({ ...point })),
+    axisOrigin: stroke.axisOrigin ? { ...stroke.axisOrigin } : undefined,
+    axisHandle: stroke.axisHandle ? { ...stroke.axisHandle } : undefined,
     bbox: { ...stroke.bbox },
   };
 }
@@ -68,6 +71,8 @@ export function useEditorPageState({
   const [pageBackgrounds, setPageBackgrounds] = useState<PageBackground[]>([
     { ...emptyBackground },
   ]);
+  const [pageTextItems, setPageTextItems] = useState<NoteTextItem[][]>([[]]);
+  const pageTextItemsRef = useRef<NoteTextItem[][]>([[]]);
   const [currentPageIndex, setCurrentPageIndex] = useState(0);
   const currentPageIndexRef = useRef(0);
   const [pageHistories, setPageHistories] = useState<PageHistoryState[]>([
@@ -84,6 +89,10 @@ export function useEditorPageState({
   useEffect(() => {
     pagesRef.current = pages;
   }, [pages]);
+
+  useEffect(() => {
+    pageTextItemsRef.current = pageTextItems;
+  }, [pageTextItems]);
 
   useEffect(() => {
     currentPageIndexRef.current = currentPageIndex;
@@ -203,10 +212,12 @@ export function useEditorPageState({
     ({
       pages: nextPages,
       pageBackgrounds: nextBackgrounds,
+      pageTextItems: nextTextItems,
       currentPageIndex: nextPageIndex,
       strokes: nextStrokes,
     }: {
       pages: Stroke[][];
+      pageTextItems: NoteTextItem[][];
       pageBackgrounds: PageBackground[];
       currentPageIndex: number;
       strokes: Stroke[];
@@ -222,6 +233,7 @@ export function useEditorPageState({
       pagesRef.current = safePages;
       pageHistoriesRef.current = nextHistories;
       setPages(safePages);
+      setPageTextItems(nextTextItems);
       setPageBackgrounds(nextBackgrounds);
       setPageHistories(nextHistories);
       syncCurrentPageState(clampedIndex, pageSnapshot);
@@ -233,6 +245,7 @@ export function useEditorPageState({
     loadSnapshot({
       pages: [[]],
       pageBackgrounds: [{ ...emptyBackground }],
+      pageTextItems: [[]],
       currentPageIndex: 0,
       strokes: [],
     });
@@ -255,6 +268,7 @@ export function useEditorPageState({
     const safeBackgrounds = safePages.map(
       (_, i) => pageBackgrounds[i] ?? { ...emptyBackground },
     );
+    const safeTextItems = safePages.map((_, i) => pageTextItemsRef.current[i] ?? []);
     const insertAt = Math.max(
       0,
       Math.min(safePages.length, currentPageIndex + 1),
@@ -269,6 +283,11 @@ export function useEditorPageState({
       { ...emptyBackground },
       ...safeBackgrounds.slice(insertAt),
     ];
+    const nextTextItems = [
+      ...safeTextItems.slice(0, insertAt),
+      [],
+      ...safeTextItems.slice(insertAt),
+    ];
     const nextHistories = [
       ...pageHistoriesRef.current.slice(0, insertAt),
       { entries: [[]], index: 0 },
@@ -279,6 +298,7 @@ export function useEditorPageState({
     pagesRef.current = nextPages;
     pageHistoriesRef.current = nextHistories;
     setPages(nextPages);
+    setPageTextItems(nextTextItems);
     setPageBackgrounds(nextBackgrounds);
     setPageHistories(nextHistories);
     syncCurrentPageState(insertAt, []);
@@ -289,6 +309,7 @@ export function useEditorPageState({
     const safeBackgrounds = safePages.map(
       (_, i) => pageBackgrounds[i] ?? { ...emptyBackground },
     );
+    const safeTextItems = safePages.map((_, i) => pageTextItemsRef.current[i] ?? []);
 
     if (safePages.length <= 1) {
       beforeSwitch();
@@ -300,6 +321,7 @@ export function useEditorPageState({
     const nextBackgrounds = safeBackgrounds.filter(
       (_, i) => i !== currentPageIndex,
     );
+    const nextTextItems = safeTextItems.filter((_, i) => i !== currentPageIndex);
     const nextHistories = pageHistoriesRef.current.filter(
       (_, i) => i !== currentPageIndex,
     );
@@ -316,6 +338,7 @@ export function useEditorPageState({
     pagesRef.current = nextPages;
     pageHistoriesRef.current = nextHistories;
     setPages(nextPages);
+    setPageTextItems(nextTextItems);
     setPageBackgrounds(nextBackgrounds);
     setPageHistories(nextHistories);
     syncCurrentPageState(nextIndex, nextStrokes);
@@ -326,18 +349,22 @@ export function useEditorPageState({
     const safeBackgrounds = safePages.map(
       (_, i) => pageBackgrounds[i] ?? { ...emptyBackground },
     );
+    const safeTextItems = safePages.map((_, i) => pageTextItemsRef.current[i] ?? []);
     const to = from + delta;
     if (from < 0 || from >= safePages.length) return;
     if (to < 0 || to >= safePages.length) return;
 
     const nextPages = safePages.slice();
     const nextBackgrounds = safeBackgrounds.slice();
+    const nextTextItems = safeTextItems.slice();
     const nextHistories = pageHistoriesRef.current.slice();
     const [moved] = nextPages.splice(from, 1);
     const [movedBg] = nextBackgrounds.splice(from, 1);
+    const [movedTextItems] = nextTextItems.splice(from, 1);
     const [movedHistory] = nextHistories.splice(from, 1);
     nextPages.splice(to, 0, moved);
     nextBackgrounds.splice(to, 0, movedBg ?? { ...emptyBackground });
+    nextTextItems.splice(to, 0, movedTextItems ?? []);
     nextHistories.splice(to, 0, movedHistory ?? { entries: [[]], index: 0 });
 
     let nextCurrentIndex = currentPageIndex;
@@ -351,6 +378,7 @@ export function useEditorPageState({
     pagesRef.current = nextPages;
     pageHistoriesRef.current = nextHistories;
     setPages(nextPages);
+    setPageTextItems(nextTextItems);
     setPageBackgrounds(nextBackgrounds);
     setPageHistories(nextHistories);
     syncCurrentPageState(
@@ -372,6 +400,8 @@ export function useEditorPageState({
     commitCurrentPageHistory,
     pages,
     setPages,
+    pageTextItems,
+    setPageTextItems,
     pageBackgrounds,
     setPageBackgrounds,
     currentPageIndex,

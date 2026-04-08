@@ -1,10 +1,10 @@
 import React from "react";
 import { Pressable } from "react-native";
 
-const BTN_BG = "rgba(255,255,255,0.02)";
-const BTN_BG_ACTIVE = "rgba(15,23,42,0.08)";
-const BTN_BORDER = "rgba(20,26,34,0.08)";
-const BTN_BORDER_ACTIVE = "rgba(15,23,42,0.14)";
+const BTN_BG = "rgba(255,249,241,0.30)";
+const BTN_BG_ACTIVE = "rgba(35,52,70,0.10)";
+const BTN_BORDER = "rgba(71,51,33,0.10)";
+const BTN_BORDER_ACTIVE = "rgba(35,52,70,0.18)";
 
 type EditorIconButtonProps = {
   onPress: () => void;
@@ -31,9 +31,9 @@ export function EditorIconButton({
       onPress={onPress}
       disabled={disabled}
       style={{
-        width: 42,
-        height: 42,
-        borderRadius: 12,
+        width: 36,
+        height: 36,
+        borderRadius: 10,
         alignItems: "center",
         justifyContent: "center",
         backgroundColor: bg,
@@ -44,7 +44,7 @@ export function EditorIconButton({
         shadowOpacity: active ? 0.08 : 0,
         shadowRadius: active ? 8 : 0,
         shadowOffset: { width: 0, height: 3 },
-        boxShadow: active ? "0 6px 14px rgba(15,23,42,0.08)" : "none",
+        boxShadow: active ? "0 8px 18px rgba(56,42,26,0.10)" : "none",
       }}
     >
       {children}

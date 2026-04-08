@@ -128,7 +128,9 @@ export async function exportNoteAsPdf({
         .map((stroke) => {
           const d = escapeHtml(stroke.d);
           const c = escapeHtml(stroke.c);
-          return `<path d="${d}" stroke="${c}" stroke-width="${stroke.w}" fill="none" stroke-linecap="round" stroke-linejoin="round" transform="translate(${stroke.dx} ${stroke.dy})" />`;
+          const opacity = Number.isFinite(stroke.a) ? stroke.a : 1;
+          const dash = stroke.dashed ? ` stroke-dasharray="6 6"` : "";
+          return `<path d="${d}" stroke="${c}" stroke-opacity="${opacity}" stroke-width="${stroke.w}" fill="none" stroke-linecap="round" stroke-linejoin="round"${dash} transform="translate(${stroke.dx} ${stroke.dy})" />`;
         })
         .join("");
       const bgImg = resolvedBackgroundUrl

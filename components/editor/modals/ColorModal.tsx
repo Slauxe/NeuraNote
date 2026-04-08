@@ -9,6 +9,8 @@ import React from "react";
 import { Modal, Platform, Pressable, Text, View } from "react-native";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 
+import { STUDIO, StudioModalCard, StudioTitle } from "@/components/studio/StudioPrimitives";
+
 const IS_WEB = Platform.OS === "web";
 
 function colorFromHue(h: number) {
@@ -69,7 +71,7 @@ type ColorModalProps = {
   penColor: string;
   colorSlots: string[];
   activeSlotIndex: number | null;
-  tool: "pen" | "eraser" | "lasso";
+  tool: "pen" | "highlighter" | "shape" | "text" | "eraser" | "lasso" | "hand";
   onClose: () => void;
   onHueChange: (hue: number, color: string) => void;
   onActivatePenTool: () => void;
@@ -103,7 +105,7 @@ export function ColorModal({
         onPress={onClose}
         style={{
           flex: 1,
-          backgroundColor: "rgba(0,0,0,0.35)",
+          backgroundColor: "rgba(32,23,16,0.32)",
           alignItems: "flex-end",
           justifyContent: "flex-start",
           paddingTop: 60,
@@ -111,18 +113,8 @@ export function ColorModal({
           paddingLeft: 16,
         }}
       >
-        <Pressable
-          onPress={() => {}}
-          style={{
-            width: 340,
-            maxWidth: "100%",
-            backgroundColor: "#FFFFFF",
-            borderRadius: 18,
-            padding: 14,
-            borderWidth: 1,
-            borderColor: "rgba(20,26,34,0.12)",
-          }}
-        >
+        <Pressable onPress={() => {}}>
+          <StudioModalCard width={340}>
           <View
             style={{
               flexDirection: "row",
@@ -131,9 +123,12 @@ export function ColorModal({
               marginBottom: 12,
             }}
           >
-            <Text style={{ color: "#121826", fontSize: 18, fontWeight: "900" }}>
-              Color
-            </Text>
+            <View>
+              <Text style={{ color: STUDIO.accentWarm, fontSize: 11, fontWeight: "900", letterSpacing: 1.1, textTransform: "uppercase" }}>
+                Ink palette
+              </Text>
+              <StudioTitle size={24}>Color</StudioTitle>
+            </View>
 
             <View style={{ flexDirection: "row", gap: 10 }}>
               <Pressable
@@ -150,10 +145,12 @@ export function ColorModal({
                 style={{
                   width: 34,
                   height: 34,
-                  borderRadius: 10,
+                  borderRadius: 12,
                   alignItems: "center",
                   justifyContent: "center",
-                  backgroundColor: "rgba(20,26,34,0.06)",
+                  backgroundColor: "rgba(255,249,241,0.72)",
+                  borderWidth: 1,
+                  borderColor: STUDIO.line,
                 }}
               >
                 <Text
@@ -172,10 +169,12 @@ export function ColorModal({
                 style={{
                   width: 34,
                   height: 34,
-                  borderRadius: 10,
+                  borderRadius: 12,
                   alignItems: "center",
                   justifyContent: "center",
-                  backgroundColor: "rgba(20,26,34,0.06)",
+                  backgroundColor: "rgba(255,249,241,0.72)",
+                  borderWidth: 1,
+                  borderColor: STUDIO.line,
                 }}
               >
                 <Text
@@ -199,7 +198,7 @@ export function ColorModal({
                 justifyContent: "space-between",
               }}
             >
-              <Text style={{ color: "rgba(20,26,34,0.72)", fontSize: 12 }}>
+              <Text style={{ color: STUDIO.muted, fontSize: 12 }}>
                 Hue
               </Text>
 
@@ -210,7 +209,7 @@ export function ColorModal({
                   borderRadius: 999,
                   backgroundColor: penColor,
                   borderWidth: 1,
-                  borderColor: "rgba(20,26,34,0.25)",
+                  borderColor: STUDIO.lineStrong,
                 }}
               />
             </View>
@@ -221,7 +220,7 @@ export function ColorModal({
                 borderRadius: 14,
                 overflow: "hidden",
                 borderWidth: 1,
-                borderColor: "rgba(20,26,34,0.12)",
+                borderColor: STUDIO.line,
                 justifyContent: "center",
               }}
             >
@@ -253,7 +252,7 @@ export function ColorModal({
               />
             </View>
 
-            <Text style={{ color: "rgba(20,26,34,0.66)", fontSize: 12 }}>
+            <Text style={{ color: STUDIO.muted, fontSize: 12 }}>
               Tap a slot to use, long-press to save
             </Text>
 
@@ -284,14 +283,15 @@ export function ColorModal({
                       backgroundColor: c || "rgba(20,26,34,0.06)",
                       borderWidth: selected ? 3 : 1,
                       borderColor: selected
-                        ? "#121826"
-                        : "rgba(20,26,34,0.18)",
+                        ? STUDIO.ink
+                        : STUDIO.lineStrong,
                     }}
                   />
                 );
               })}
             </View>
           </View>
+          </StudioModalCard>
         </Pressable>
       </Pressable>
     </Modal>

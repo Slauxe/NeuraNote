@@ -1,24 +1,30 @@
 import {
   Eraser,
+  Hand,
+  Highlighter,
   LassoSelect,
+  MoreHorizontal,
   MoreVertical,
   Palette,
   PenLine,
   RotateCcw,
   RotateCw,
-  Trash2,
+  Shapes,
+  Type,
 } from "lucide-react-native";
-import React from "react";
-import { Pressable, Text, View } from "react-native";
+import React, { useState } from "react";
+import { GestureDetector } from "react-native-gesture-handler";
+import { Modal, Pressable, Text, View } from "react-native";
 
 import { EditorIconButton } from "@/components/editor/EditorIconButton";
+import { STUDIO } from "@/components/studio/StudioPrimitives";
 
-const TOPBAR_BG = "rgba(255,255,255,0.92)";
-const TOPBAR_BORDER = "rgba(22,26,33,0.08)";
-const BTN_BG = "rgba(255,255,255,0.02)";
-const BTN_BORDER = "rgba(20,26,34,0.08)";
+const TOPBAR_BG = "rgba(255,249,241,0.88)";
+const TOPBAR_BORDER = "rgba(71,51,33,0.10)";
+const BTN_BG = "rgba(255,249,241,0.34)";
+const BTN_BORDER = "rgba(71,51,33,0.10)";
 
-type Tool = "pen" | "eraser" | "lasso";
+type Tool = "pen" | "highlighter" | "shape" | "text" | "eraser" | "lasso" | "hand";
 
 type FloatingToolbarProps = {
   toolbarPos: { x: number; y: number };
@@ -32,14 +38,18 @@ type FloatingToolbarProps = {
   historyIndex: number;
   historyLength: number;
   onToolbarLayout: (size: { w: number; h: number }) => void;
-  handlePanHandlers: any;
+  toolbarHandleGesture: any;
   onPenPress: () => void;
+  onHighlighterPress: () => void;
+  onShapePress: () => void;
+  onTextPress: () => void;
   onEraserPress: () => void;
   onLassoPress: () => void;
+  onHandPress: () => void;
   onColorPress: () => void;
   onPagesPress: () => void;
   onExportPdf: () => void;
-  onDeleteSelection: () => void;
+  onExportImage: () => void;
   onZoomOut: () => void;
   onZoomReset: () => void;
   onZoomIn: () => void;
@@ -59,259 +69,384 @@ export function FloatingToolbar({
   historyIndex,
   historyLength,
   onToolbarLayout,
-  handlePanHandlers,
+  toolbarHandleGesture,
   onPenPress,
+  onHighlighterPress,
+  onShapePress,
+  onTextPress,
   onEraserPress,
   onLassoPress,
+  onHandPress,
   onColorPress,
   onPagesPress,
   onExportPdf,
-  onDeleteSelection,
+  onExportImage,
   onZoomOut,
   onZoomReset,
   onZoomIn,
   onUndo,
   onRedo,
 }: FloatingToolbarProps) {
-  const iconOn = "#0B1026";
-  const iconOff = "rgba(12,18,28,0.86)";
+  const [isOverflowOpen, setIsOverflowOpen] = useState(false);
+  const iconOn = STUDIO.accent;
+  const iconOff = "rgba(30,35,41,0.80)";
   const dividerStyle =
     toolbarOrientation === "horizontal"
       ? ({
           width: 1,
           alignSelf: "stretch",
           backgroundColor: "rgba(20,26,34,0.08)",
-          marginHorizontal: 2,
+          marginHorizontal: 1,
         } as const)
       : ({
           height: 1,
           alignSelf: "stretch",
           backgroundColor: "rgba(20,26,34,0.08)",
-          marginVertical: 2,
+          marginVertical: 1,
         } as const);
   const toolbarRow =
     toolbarOrientation === "horizontal"
       ? ({
           flexDirection: "row",
           alignItems: "center",
-          gap: 6,
+          gap: 4,
         } as const)
       : ({
           flexDirection: "column",
           alignItems: "center",
-          gap: 6,
+          gap: 4,
         } as const);
 
   return (
-    <View
-      style={{
-        position: "absolute",
-        left: toolbarPos.x,
-        top: toolbarPos.y,
-        zIndex: 50,
-      }}
-      onLayout={(e) => {
-        const { width, height } = e.nativeEvent.layout;
-        onToolbarLayout({ w: width, h: height });
-      }}
-      pointerEvents="box-none"
-    >
+    <>
       <View
-        style={[
-          {
-            padding: 6,
-            borderRadius: 22,
-            borderWidth: 1,
-            borderColor: TOPBAR_BORDER,
-            backgroundColor: TOPBAR_BG,
-            shadowColor: "#000",
-            shadowOpacity: 0.08,
-            shadowRadius: 18,
-            shadowOffset: { width: 0, height: 8 },
-            boxShadow: "0 14px 32px rgba(15,23,42,0.10)",
-            backdropFilter: "blur(12px)",
-          },
-          toolbarRow,
-        ]}
+        style={{
+          position: "absolute",
+          left: toolbarPos.x,
+          top: toolbarPos.y,
+          zIndex: 50,
+        }}
+        onLayout={(e) => {
+          const { width, height } = e.nativeEvent.layout;
+          onToolbarLayout({ w: width, h: height });
+        }}
+        pointerEvents="box-none"
       >
         <View
-          {...handlePanHandlers}
-          style={{
-            width: 38,
-            height: 38,
-            borderRadius: 12,
-            alignItems: "center",
-            justifyContent: "center",
-            backgroundColor: BTN_BG,
-            borderWidth: 1,
-            borderColor: BTN_BORDER,
-          }}
+          style={[
+            {
+              padding: 5,
+              borderRadius: 18,
+              borderWidth: 1,
+              borderColor: TOPBAR_BORDER,
+              backgroundColor: TOPBAR_BG,
+              shadowColor: "#000",
+              shadowOpacity: 0.08,
+              shadowRadius: 18,
+              shadowOffset: { width: 0, height: 8 },
+              boxShadow: "0 16px 30px rgba(56,42,26,0.14)",
+              backdropFilter: "blur(12px)",
+            },
+            toolbarRow,
+          ]}
         >
-          <MoreVertical size={18} color="rgba(12,18,28,0.68)" />
-        </View>
-
-        <EditorIconButton onPress={onPenPress} active={tool === "pen"}>
-          <PenLine size={20} color={tool === "pen" ? iconOn : iconOff} />
-        </EditorIconButton>
-
-        <EditorIconButton onPress={onEraserPress} active={tool === "eraser"}>
-          <Eraser size={20} color={tool === "eraser" ? iconOn : iconOff} />
-        </EditorIconButton>
-
-        <EditorIconButton onPress={onLassoPress} active={tool === "lasso"}>
-          <LassoSelect size={20} color={tool === "lasso" ? iconOn : iconOff} />
-        </EditorIconButton>
-
-        <EditorIconButton
-          onPress={onColorPress}
-          disabled={tool === "eraser"}
-          bgOverride={penColor}
-          borderOverride="rgba(255,255,255,0.30)"
-        >
-          <Palette size={20} color="#ffffff" />
-        </EditorIconButton>
-
-        <View style={dividerStyle} />
-
-        <EditorIconButton onPress={onPagesPress}>
-          <View style={{ alignItems: "center", justifyContent: "center" }}>
-            <Text
+          <GestureDetector gesture={toolbarHandleGesture}>
+            <View
               style={{
-                color: iconOff,
-                fontWeight: "900",
-                fontSize: 11,
-                lineHeight: 12,
+                width: 34,
+                height: 34,
+                borderRadius: 10,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: BTN_BG,
+                borderWidth: 1,
+                borderColor: BTN_BORDER,
               }}
             >
-              {navLabel}
-            </Text>
-            <Text
-              style={{
-                color: "rgba(20,26,34,0.72)",
-                fontSize: 9,
-                lineHeight: 10,
-              }}
-            >
-              {navSubLabel}
-            </Text>
-          </View>
-        </EditorIconButton>
+              <MoreVertical size={16} color="rgba(59,45,33,0.76)" />
+            </View>
+          </GestureDetector>
 
-        <EditorIconButton onPress={onExportPdf}>
-          <Text style={{ color: iconOff, fontWeight: "900", fontSize: 11 }}>
-            PDF
-          </Text>
-        </EditorIconButton>
-
-        {tool === "lasso" ? (
-          <EditorIconButton
-            onPress={onDeleteSelection}
-            disabled={selectedCount === 0}
-            bgOverride={selectedCount === 0 ? BTN_BG : "#ff3b30"}
-            borderOverride={
-              selectedCount === 0 ? BTN_BORDER : "rgba(255,255,255,0.22)"
-            }
-          >
-            <Trash2 size={20} color={selectedCount === 0 ? iconOff : "#fff"} />
-          </EditorIconButton>
-        ) : null}
-
-        <View style={dividerStyle} />
-
-        <View
-          style={
-            toolbarOrientation === "horizontal"
-              ? ({ flexDirection: "row", gap: 6 } as const)
-              : ({ flexDirection: "column", gap: 6 } as const)
-          }
-        >
-          <Pressable
-            onPress={onZoomOut}
-            style={{
-              width: 42,
-              height: 42,
-              borderRadius: 12,
-              alignItems: "center",
-              justifyContent: "center",
-              backgroundColor: BTN_BG,
-              borderWidth: 1,
-              borderColor: BTN_BORDER,
-            }}
-          >
-            <Text style={{ color: iconOff, fontWeight: "900", fontSize: 18 }}>
-              -
-            </Text>
-          </Pressable>
-
-          <Pressable
-            onPress={onZoomReset}
-            style={{
-              height: 42,
-              minWidth: 68,
-              paddingHorizontal: 12,
-              borderRadius: 12,
-              alignItems: "center",
-              justifyContent: "center",
-              backgroundColor: BTN_BG,
-              borderWidth: 1,
-              borderColor: BTN_BORDER,
-            }}
-          >
-            <Text style={{ color: iconOff, fontWeight: "900" }}>
-              {Math.round(zoom * 100)}%
-            </Text>
-          </Pressable>
-
-          <Pressable
-            onPress={onZoomIn}
-            style={{
-              width: 42,
-              height: 42,
-              borderRadius: 12,
-              alignItems: "center",
-              justifyContent: "center",
-              backgroundColor: BTN_BG,
-              borderWidth: 1,
-              borderColor: BTN_BORDER,
-            }}
-          >
-            <Text style={{ color: iconOff, fontWeight: "900", fontSize: 18 }}>
-              +
-            </Text>
-          </Pressable>
-        </View>
-
-        <View style={dividerStyle} />
-
-        <View
-          style={
-            toolbarOrientation === "horizontal"
-              ? ({ flexDirection: "row", gap: 6 } as const)
-              : ({ flexDirection: "column", gap: 6 } as const)
-          }
-        >
-          <EditorIconButton onPress={onUndo} disabled={historyIndex <= 0}>
-            <RotateCcw
-              size={20}
-              color={historyIndex > 0 ? iconOff : "rgba(255,255,255,0.4)"}
-            />
+          <EditorIconButton onPress={onPenPress} active={tool === "pen"}>
+            <PenLine size={18} color={tool === "pen" ? iconOn : iconOff} />
           </EditorIconButton>
 
           <EditorIconButton
-            onPress={onRedo}
-            disabled={historyIndex >= historyLength - 1}
+            onPress={onHighlighterPress}
+            active={tool === "highlighter"}
           >
-            <RotateCw
-              size={20}
-              color={
-                historyIndex < historyLength - 1
-                  ? iconOff
-                  : "rgba(255,255,255,0.4)"
-              }
+            <Highlighter
+              size={18}
+              color={tool === "highlighter" ? iconOn : iconOff}
             />
+          </EditorIconButton>
+
+          <EditorIconButton onPress={onShapePress} active={tool === "shape"}>
+            <Shapes size={18} color={tool === "shape" ? iconOn : iconOff} />
+          </EditorIconButton>
+
+          <EditorIconButton onPress={onTextPress} active={tool === "text"}>
+            <Type size={18} color={tool === "text" ? iconOn : iconOff} />
+          </EditorIconButton>
+
+          <EditorIconButton onPress={onEraserPress} active={tool === "eraser"}>
+            <Eraser size={18} color={tool === "eraser" ? iconOn : iconOff} />
+          </EditorIconButton>
+
+          <EditorIconButton onPress={onLassoPress} active={tool === "lasso"}>
+            <LassoSelect size={18} color={tool === "lasso" ? iconOn : iconOff} />
+          </EditorIconButton>
+
+          <EditorIconButton onPress={onHandPress} active={tool === "hand"}>
+            <Hand size={18} color={tool === "hand" ? iconOn : iconOff} />
+          </EditorIconButton>
+
+          <EditorIconButton
+            onPress={onColorPress}
+            disabled={tool === "eraser" || tool === "hand"}
+            bgOverride={penColor}
+            borderOverride="rgba(255,255,255,0.30)"
+          >
+            <Palette size={18} color="#ffffff" />
+          </EditorIconButton>
+
+          <View style={dividerStyle} />
+
+          <EditorIconButton onPress={() => setIsOverflowOpen(true)}>
+            <MoreHorizontal size={18} color={iconOff} />
           </EditorIconButton>
         </View>
       </View>
-    </View>
+
+      <Modal
+        visible={isOverflowOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsOverflowOpen(false)}
+      >
+        <Pressable
+          onPress={() => setIsOverflowOpen(false)}
+          style={{
+            flex: 1,
+            backgroundColor: "rgba(32,23,16,0.32)",
+            justifyContent: "flex-start",
+            alignItems: "flex-start",
+            paddingLeft: toolbarPos.x,
+            paddingTop: toolbarPos.y + 52,
+          }}
+        >
+          <Pressable
+            onPress={() => {}}
+            style={{
+              minWidth: 220,
+              padding: 14,
+              borderRadius: 18,
+              borderWidth: 1,
+              borderColor: TOPBAR_BORDER,
+              backgroundColor: "rgba(255,249,241,0.97)",
+              shadowColor: "#000",
+              shadowOpacity: 0.12,
+              shadowRadius: 20,
+              shadowOffset: { width: 0, height: 10 },
+              boxShadow: "0 18px 34px rgba(56,42,26,0.18)",
+            }}
+          >
+            <Text
+              style={{
+                color: STUDIO.accentWarm,
+                fontWeight: "900",
+                fontSize: 11,
+                letterSpacing: 0.8,
+                textTransform: "uppercase",
+                marginBottom: 10,
+              }}
+            >
+              More tools
+            </Text>
+
+            <Pressable
+              onPress={() => {
+                setIsOverflowOpen(false);
+                onPagesPress();
+              }}
+              style={{
+                paddingVertical: 10,
+                paddingHorizontal: 12,
+                borderRadius: 14,
+                backgroundColor: "rgba(255,249,241,0.64)",
+                borderWidth: 1,
+                borderColor: BTN_BORDER,
+                marginBottom: 8,
+              }}
+            >
+              <Text style={{ color: iconOff, fontWeight: "900", fontSize: 12 }}>
+                {navLabel}
+              </Text>
+              <Text
+                style={{
+                  color: "rgba(20,26,34,0.72)",
+                  fontSize: 11,
+                  marginTop: 2,
+                }}
+              >
+                {navSubLabel}
+              </Text>
+            </Pressable>
+
+            <View style={{ flexDirection: "row", gap: 8, marginBottom: 8 }}>
+              <Pressable
+                onPress={() => {
+                  setIsOverflowOpen(false);
+                  onExportPdf();
+                }}
+                style={{
+                  flex: 1,
+                  height: 36,
+                  borderRadius: 12,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: BTN_BG,
+                  borderWidth: 1,
+                  borderColor: BTN_BORDER,
+                }}
+              >
+                <Text style={{ color: iconOff, fontWeight: "900", fontSize: 11 }}>
+                  PDF
+                </Text>
+              </Pressable>
+
+              <Pressable
+                onPress={() => {
+                  setIsOverflowOpen(false);
+                  onExportImage();
+                }}
+                style={{
+                  flex: 1,
+                  height: 36,
+                  borderRadius: 12,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: BTN_BG,
+                  borderWidth: 1,
+                  borderColor: BTN_BORDER,
+                }}
+              >
+                <Text style={{ color: iconOff, fontWeight: "900", fontSize: 11 }}>
+                  PNG
+                </Text>
+              </Pressable>
+            </View>
+
+            <View style={{ flexDirection: "row", gap: 8, marginBottom: 8 }}>
+              <Pressable
+                onPress={onZoomOut}
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 12,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: BTN_BG,
+                  borderWidth: 1,
+                  borderColor: BTN_BORDER,
+                }}
+              >
+                <Text style={{ color: iconOff, fontWeight: "900", fontSize: 16 }}>
+                  -
+                </Text>
+              </Pressable>
+
+              <Pressable
+                onPress={onZoomReset}
+                style={{
+                  flex: 1,
+                  height: 36,
+                  borderRadius: 12,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: BTN_BG,
+                  borderWidth: 1,
+                  borderColor: BTN_BORDER,
+                }}
+              >
+                <Text style={{ color: iconOff, fontWeight: "900", fontSize: 12 }}>
+                  {Math.round(zoom * 100)}%
+                </Text>
+              </Pressable>
+
+              <Pressable
+                onPress={onZoomIn}
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 12,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: BTN_BG,
+                  borderWidth: 1,
+                  borderColor: BTN_BORDER,
+                }}
+              >
+                <Text style={{ color: iconOff, fontWeight: "900", fontSize: 16 }}>
+                  +
+                </Text>
+              </Pressable>
+            </View>
+
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              <Pressable
+                onPress={() => {
+                  onUndo();
+                }}
+                disabled={historyIndex <= 0}
+                style={{
+                  flex: 1,
+                  height: 36,
+                  borderRadius: 12,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: BTN_BG,
+                  borderWidth: 1,
+                  borderColor: BTN_BORDER,
+                  opacity: historyIndex > 0 ? 1 : 0.45,
+                }}
+              >
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  <RotateCcw size={16} color={iconOff} />
+                  <Text style={{ color: iconOff, fontWeight: "900", fontSize: 11 }}>
+                    Undo
+                  </Text>
+                </View>
+              </Pressable>
+
+              <Pressable
+                onPress={() => {
+                  onRedo();
+                }}
+                disabled={historyIndex >= historyLength - 1}
+                style={{
+                  flex: 1,
+                  height: 36,
+                  borderRadius: 12,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: BTN_BG,
+                  borderWidth: 1,
+                  borderColor: BTN_BORDER,
+                  opacity: historyIndex < historyLength - 1 ? 1 : 0.45,
+                }}
+              >
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  <RotateCw size={16} color={iconOff} />
+                  <Text style={{ color: iconOff, fontWeight: "900", fontSize: 11 }}>
+                    Redo
+                  </Text>
+                </View>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </>
   );
 }

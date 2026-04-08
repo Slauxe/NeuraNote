@@ -3,7 +3,7 @@
     "name": "NeuraNote",
     "slug": "NeuraNote",
     "version": "1.0.0",
-    "orientation": "portrait",
+    "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "neuranote",
     "userInterfaceStyle": "automatic",
@@ -28,6 +28,7 @@
     },
     "plugins": [
       "expo-router",
+      "expo-screen-orientation",
       [
         "expo-splash-screen",
         {

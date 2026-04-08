@@ -3,6 +3,10 @@ import type {
   InfiniteBoardBackgroundStyle,
   NoteDoc,
   NoteKind,
+  NoteMetadata,
+  NoteTextItem,
+  PageSizePreset,
+  PageTemplate,
 } from "./noteDocument";
 import {
   EMPTY_PAGE_BACKGROUND,
@@ -69,6 +73,48 @@ function sanitizeBoardBackgroundStyle(
   return value === "dots" || value === "blank" ? value : "grid";
 }
 
+function sanitizePageTemplate(value: unknown): PageTemplate {
+  return value === "ruled" ||
+    value === "grid" ||
+    value === "dots" ||
+    value === "graph-fine" ||
+    value === "graph-coarse" ||
+    value === "polar" ||
+    value === "isometric"
+    ? value
+    : "blank";
+}
+
+function sanitizePageSizePreset(value: unknown): PageSizePreset {
+  return value === "a4" || value === "square" ? value : "letter";
+}
+
+function sanitizeMetadata(raw: any): NoteMetadata {
+  const tags = Array.isArray(raw?.tags)
+    ? raw.tags
+        .map((tag: unknown) =>
+          typeof tag === "string" ? tag.trim() : String(tag ?? "").trim(),
+        )
+        .filter(Boolean)
+        .slice(0, 12)
+    : [];
+  const bookmarkedPages = Array.isArray(raw?.bookmarkedPages)
+    ? raw.bookmarkedPages
+        .map((value: unknown) => Number(value))
+        .filter((value: number) => Number.isFinite(value) && value >= 0)
+        .map((value: number) => Math.trunc(value))
+    : [];
+
+  return {
+    description:
+      typeof raw?.description === "string" ? raw.description.slice(0, 500) : "",
+    tags,
+    bookmarkedPages: Array.from(new Set<number>(bookmarkedPages)),
+    pageTemplate: sanitizePageTemplate(raw?.pageTemplate),
+    pageSizePreset: sanitizePageSizePreset(raw?.pageSizePreset),
+  };
+}
+
 export function sanitizeStroke(raw: any): Stroke | null {
   if (!raw) return null;
   const points = Array.isArray(raw.points) ? raw.points : [];
@@ -100,6 +146,28 @@ export function sanitizeStroke(raw: any): Stroke | null {
     d,
     w: Number.isFinite(raw.w) ? raw.w : 4,
     c: typeof raw.c === "string" ? raw.c : "#111111",
+    a:
+      Number.isFinite(raw.a) && raw.a >= 0 && raw.a <= 1
+        ? Number(raw.a)
+        : 1,
+    dashed: raw.dashed === true,
+    shapePreset:
+      raw.shapePreset === "axis-2d" || raw.shapePreset === "axis-3d"
+        ? raw.shapePreset
+        : undefined,
+    groupId: typeof raw.groupId === "string" && raw.groupId ? raw.groupId : undefined,
+    axisRole:
+      raw.axisRole === "x" || raw.axisRole === "y" || raw.axisRole === "z"
+        ? raw.axisRole
+        : undefined,
+    axisOrigin:
+      Number.isFinite(raw?.axisOrigin?.x) && Number.isFinite(raw?.axisOrigin?.y)
+        ? { x: Number(raw.axisOrigin.x), y: Number(raw.axisOrigin.y) }
+        : undefined,
+    axisHandle:
+      Number.isFinite(raw?.axisHandle?.x) && Number.isFinite(raw?.axisHandle?.y)
+        ? { x: Number(raw.axisHandle.x), y: Number(raw.axisHandle.y) }
+        : undefined,
     dx: Number.isFinite(raw.dx) ? raw.dx : 0,
     dy: Number.isFinite(raw.dy) ? raw.dy : 0,
     bbox,
@@ -110,8 +178,10 @@ export function normalizeDocToPages(rawDoc: any): {
   kind: NoteKind;
   board: InfiniteBoard | null;
   pages: Stroke[][];
+  pageTextItems: NoteTextItem[][];
   pageBackgrounds: PageBackground[];
   currentPageIndex: number;
+  metadata: NoteMetadata;
 } {
   const kind: NoteKind = rawDoc?.kind === "infinite" ? "infinite" : "page";
   const board: InfiniteBoard | null =
@@ -135,6 +205,7 @@ export function normalizeDocToPages(rawDoc: any): {
   const rawPages = Array.isArray(rawDoc?.pages) ? rawDoc.pages : null;
 
   let pages: Stroke[][] = [];
+  let pageTextItems: NoteTextItem[][] = [];
   let pageBackgrounds: PageBackground[] = [];
 
   if (rawPages && rawPages.length > 0) {
@@ -143,6 +214,23 @@ export function normalizeDocToPages(rawDoc: any): {
         (Array.isArray(pg?.strokes) ? pg.strokes : [])
           .map(sanitizeStroke)
           .filter(Boolean) as Stroke[],
+    );
+    pageTextItems = rawPages.map((pg: any) =>
+      (Array.isArray(pg?.textItems) ? pg.textItems : [])
+        .map((item: any) => ({
+          id:
+            typeof item?.id === "string" && item.id
+              ? item.id
+              : uid(),
+          text: typeof item?.text === "string" ? item.text : "",
+          x: Number.isFinite(item?.x) ? Number(item.x) : 24,
+          y: Number.isFinite(item?.y) ? Number(item.y) : 24,
+          color: typeof item?.color === "string" ? item.color : "#1E2329",
+          fontSize: Number.isFinite(item?.fontSize)
+            ? Number(item.fontSize)
+            : 18,
+        }))
+        .filter((item: NoteTextItem) => item.text.trim().length > 0),
     );
     pageBackgrounds = rawPages.map((pg: any) => ({
       dataUrl:
@@ -159,12 +247,18 @@ export function normalizeDocToPages(rawDoc: any): {
     const rawStrokes =
       (rawDoc && Array.isArray(rawDoc.strokes) && rawDoc.strokes) || [];
     pages = [rawStrokes.map(sanitizeStroke).filter(Boolean) as Stroke[]];
+    pageTextItems = [[]];
     pageBackgrounds = [{ ...EMPTY_PAGE_BACKGROUND }];
   }
 
   if (pages.length === 0) {
     pages = [[]];
+    pageTextItems = [[]];
     pageBackgrounds = [{ ...EMPTY_PAGE_BACKGROUND }];
+  }
+
+  if (pageTextItems.length !== pages.length) {
+    pageTextItems = pages.map((_, i) => pageTextItems[i] ?? []);
   }
 
   if (pageBackgrounds.length !== pages.length) {
@@ -177,18 +271,30 @@ export function normalizeDocToPages(rawDoc: any): {
   const currentPageIndex = Number.isFinite(rawIndex)
     ? Math.max(0, Math.min(pages.length - 1, Math.trunc(rawIndex)))
     : 0;
+  const metadata = sanitizeMetadata(rawDoc?.metadata);
 
-  return { kind, board, pages, pageBackgrounds, currentPageIndex };
+  return {
+    kind,
+    board,
+    pages,
+    pageTextItems,
+    pageBackgrounds,
+    currentPageIndex,
+    metadata,
+  };
 }
 
 export function buildDocFromPages(
   pages: Stroke[][],
+  pageTextItems: NoteTextItem[][],
   pageBackgrounds: PageBackground[],
   currentPageIndex: number,
   kind: NoteKind = "page",
   board: InfiniteBoard | null = null,
+  metadata?: NoteMetadata,
 ): NoteDoc {
   const safePages = pages.length > 0 ? pages : [[]];
+  const safeTextItems = safePages.map((_, i) => pageTextItems[i] ?? []);
   const safeBackgrounds = safePages.map(
     (_, i) => pageBackgrounds[i] ?? { ...EMPTY_PAGE_BACKGROUND },
   );
@@ -201,10 +307,18 @@ export function buildDocFromPages(
     version: 1,
     kind,
     ...(kind === "infinite" && board ? { board } : {}),
+    metadata: metadata ?? {
+      description: "",
+      tags: [],
+      bookmarkedPages: [],
+      pageTemplate: "blank",
+      pageSizePreset: "letter",
+    },
     strokes: safePages[clampedIndex] ?? [],
     pages: safePages.map((p, i) => ({
       id: `page-${i + 1}`,
       strokes: p,
+      textItems: safeTextItems[i],
       ...(safeBackgrounds[i].dataUrl
         ? { backgroundDataUrl: safeBackgrounds[i].dataUrl as string }
         : {}),

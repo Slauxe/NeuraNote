@@ -13,6 +13,13 @@ export type Stroke = {
   d: string;
   w: number;
   c: string;
+  a?: number;
+  dashed?: boolean;
+  shapePreset?: "axis-2d" | "axis-3d";
+  groupId?: string;
+  axisRole?: "x" | "y" | "z";
+  axisOrigin?: Point;
+  axisHandle?: Point;
   dx: number;
   dy: number;
   bbox: { minX: number; minY: number; maxX: number; maxY: number };

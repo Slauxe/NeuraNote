@@ -6,10 +6,21 @@ import {
   ScrollView,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { G, Path, Rect } from "react-native-svg";
 
+import {
+  DISPLAY_FONT,
+  STUDIO,
+  StudioBadge,
+  StudioButton,
+  StudioModalCard,
+  StudioSurface,
+  StudioTitle,
+} from "@/components/studio/StudioPrimitives";
 import { normalizeDocToPages } from "@/lib/editorDocument";
 import { PAGE_H, PAGE_W, type Stroke } from "@/lib/editorTypes";
 import {
@@ -22,16 +33,6 @@ import {
   type NoteDoc,
   type NoteMeta,
 } from "../../lib/notesStorage";
-
-const WORKSPACE_BG = "#F1F3F6";
-const TOPBAR_BG = "rgba(255,255,255,0.94)";
-const TOPBAR_BORDER = "rgba(20,26,34,0.12)";
-const BTN_BG = "rgba(20,26,34,0.06)";
-const BTN_BORDER = "rgba(20,26,34,0.16)";
-const TEXT_MAIN = "rgba(20,26,34,0.94)";
-const TEXT_MUTED = "rgba(20,26,34,0.62)";
-const ACCENT = "#2563EB";
-const SUCCESS = "#15803D";
 
 const DEFAULT_COVER = "#8B5CF6";
 const COVER_SWATCHES = [
@@ -86,15 +87,16 @@ function NotePreview({
       style={{
         width,
         height,
-        borderRadius: 16,
+        borderRadius: 26,
         overflow: "hidden",
-        backgroundColor: "#fff",
+        backgroundColor: "rgba(255,250,244,0.95)",
         borderWidth: 1,
-        borderColor: "rgba(20,26,34,0.08)",
+        borderColor: "rgba(68,48,29,0.12)",
         shadowColor: "#000",
-        shadowOpacity: 0.12,
-        shadowRadius: 14,
-        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 0.14,
+        shadowRadius: 18,
+        shadowOffset: { width: 0, height: 12 },
+        boxShadow: "0 18px 34px rgba(56,42,26,0.14)",
       }}
     >
       <View
@@ -102,50 +104,51 @@ function NotePreview({
           position: "absolute",
           inset: 0,
           backgroundColor: coverColor,
-          opacity: 0.08,
+          opacity: 0.12,
         }}
       />
       <View
         style={{
           position: "absolute",
-          top: 10,
-          left: 10,
-          right: 10,
+          inset: 0,
+          backgroundColor: "rgba(255,250,244,0.36)",
+        }}
+      />
+      <View
+        style={{
+          position: "absolute",
+          top: 12,
+          left: 12,
+          right: 12,
           zIndex: 2,
           flexDirection: "row",
           justifyContent: "space-between",
         }}
       >
-        <Text
-          style={{
-            color: "#121826",
-            fontSize: 10,
-            fontWeight: "900",
-            backgroundColor: "rgba(255,255,255,0.9)",
-            paddingHorizontal: 8,
-            paddingVertical: 4,
-            borderRadius: 999,
-          }}
-        >
-          {kind === "infinite" ? "Board" : "Pages"}
-        </Text>
-        <Text
-          style={{
-            color: "rgba(20,26,34,0.72)",
-            fontSize: 10,
-            fontWeight: "800",
-            backgroundColor: "rgba(255,255,255,0.84)",
-            paddingHorizontal: 8,
-            paddingVertical: 4,
-            borderRadius: 999,
-          }}
-        >
-          {pageCount} pg
-        </Text>
+        <StudioBadge
+          label={kind === "infinite" ? "Board" : "Pages"}
+          tone="warm"
+        />
+        <StudioBadge label={`${pageCount} pg`} />
       </View>
       <Svg width={width} height={height}>
-        <Rect x={0} y={0} width={width} height={height} rx={16} fill="#F8FAFC" />
-        <Rect x={12} y={12} width={innerWidth} height={innerHeight} rx={10} fill="#FFFFFF" />
+        <Rect x={0} y={0} width={width} height={height} rx={26} fill="#EEE4D7" />
+        <Rect
+          x={12}
+          y={12}
+          width={innerWidth}
+          height={innerHeight}
+          rx={18}
+          fill="#FFFDF8"
+        />
+        <Rect
+          x={12}
+          y={12}
+          width={innerWidth}
+          height={innerHeight}
+          rx={18}
+          fill="rgba(255,255,255,0.66)"
+        />
         <G transform={`translate(12 12) scale(${scale})`}>
           {strokes.slice(0, 14).map((stroke) => (
             <G key={stroke.id} transform={`translate(${stroke.dx} ${stroke.dy})`}>
@@ -175,28 +178,11 @@ function HeaderButton({
   primary?: boolean;
 }) {
   return (
-    <Pressable
+    <StudioButton
+      label={label}
       onPress={onPress}
-      style={{
-        backgroundColor: primary ? ACCENT : BTN_BG,
-        borderWidth: primary ? 0 : 1,
-        borderColor: BTN_BORDER,
-        paddingHorizontal: 16,
-        paddingVertical: 11,
-        borderRadius: 12,
-        shadowColor: primary ? "#2563EB" : "#000",
-        shadowOpacity: primary ? 0.35 : 0.18,
-        shadowRadius: 10,
-        shadowOffset: { width: 0, height: 6 },
-        boxShadow: primary
-          ? "0 10px 24px rgba(37,99,235,0.35)"
-          : "0 8px 20px rgba(0,0,0,0.24)",
-      }}
-    >
-      <Text style={{ color: primary ? "#fff" : "#121826", fontWeight: "900" }}>
-        {label}
-      </Text>
-    </Pressable>
+      tone={primary ? "primary" : "secondary"}
+    />
   );
 }
 
@@ -210,26 +196,20 @@ function SmallActionButton({
   danger?: boolean;
 }) {
   return (
-    <Pressable
+    <StudioButton
+      label={label}
       onPress={onPress}
-      style={{
-        paddingVertical: 10,
-        borderRadius: 12,
-        alignItems: "center",
-        backgroundColor: danger ? "#ff3b30" : "rgba(255,255,255,0.10)",
-        borderWidth: 1,
-        borderColor: danger ? "rgba(255,255,255,0.18)" : BTN_BORDER,
-      }}
-    >
-      <Text style={{ color: danger ? "#fff" : "#121826", fontWeight: "900" }}>
-        {label}
-      </Text>
-    </Pressable>
+      tone={danger ? "danger" : "secondary"}
+    />
   );
 }
 
 export default function Explore() {
   const router = useRouter();
+  const { width: viewportWidth } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const compactHeader = viewportWidth < 760;
+  const compactCreateOptions = viewportWidth < 520;
 
   const [notes, setNotes] = useState<NoteCardData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -462,31 +442,82 @@ export default function Explore() {
   };
 
   return (
-    <View style={{ flex: 1, backgroundColor: WORKSPACE_BG }}>
+    <View style={{ flex: 1, backgroundColor: STUDIO.bg }}>
+      <View
+        pointerEvents="none"
+        style={{
+          position: "absolute",
+          inset: 0,
+          backgroundColor: STUDIO.bg,
+        }}
+      />
+      <View
+        pointerEvents="none"
+        style={{
+          position: "absolute",
+          top: -140,
+          right: -60,
+          width: 320,
+          height: 320,
+          borderRadius: 999,
+          backgroundColor: "rgba(154,92,55,0.10)",
+        }}
+      />
+      <View
+        pointerEvents="none"
+        style={{
+          position: "absolute",
+          left: -110,
+          bottom: 40,
+          width: 260,
+          height: 260,
+          borderRadius: 999,
+          backgroundColor: "rgba(35,52,70,0.08)",
+        }}
+      />
       <View
         style={{
-          paddingTop: 20,
+          paddingTop: insets.top + 16,
           paddingHorizontal: 20,
-          paddingBottom: 14,
-          borderBottomWidth: 1,
-          borderBottomColor: TOPBAR_BORDER,
-          backgroundColor: TOPBAR_BG,
+          paddingBottom: 18,
           flexDirection: "row",
-          alignItems: "center",
+          alignItems: "flex-start",
           justifyContent: "space-between",
-          backdropFilter: "blur(10px)",
+          flexWrap: "wrap",
+          gap: 14,
         }}
       >
-        <View>
-          <Text style={{ fontSize: 28, fontWeight: "900", color: "#121826" }}>
-            Explore
+        <View style={{ maxWidth: 520, flexShrink: 1, minWidth: Math.min(320, viewportWidth - 40) }}>
+          <Text
+            style={{
+              color: STUDIO.accentWarm,
+              fontSize: 11,
+              fontWeight: "900",
+              letterSpacing: 1.1,
+              textTransform: "uppercase",
+            }}
+          >
+            Editorial Studio
           </Text>
-          <Text style={{ color: TEXT_MUTED, marginTop: 2 }}>
+          <StudioTitle size={42}>Your working library.</StudioTitle>
+          <Text style={{ color: STUDIO.muted, marginTop: 6, fontSize: 15, lineHeight: 22 }}>
+            Sketchbooks, boards, and imported PDFs arranged like a curated shelf instead of
+            a dashboard.
+          </Text>
+          <Text style={{ color: STUDIO.muted, marginTop: 10 }}>
             {loading ? "Loading..." : `${notes.length} note(s)`}
           </Text>
         </View>
 
-        <View style={{ flexDirection: "row", gap: 10 }}>
+        <View
+          style={{
+            flexDirection: "row",
+            gap: 10,
+            paddingTop: compactHeader ? 0 : 8,
+            flexWrap: "wrap",
+            justifyContent: compactHeader ? "flex-start" : "flex-end",
+          }}
+        >
           <HeaderButton
             label={editMode ? "Done" : "Edit"}
             onPress={() => setEditMode((value) => !value)}
@@ -498,30 +529,38 @@ export default function Explore() {
       <View
         style={{
           paddingHorizontal: 20,
-          paddingTop: 14,
-          paddingBottom: 6,
+          paddingBottom: 10,
           gap: 12,
         }}
       >
-        <TextInput
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          placeholder="Search notes"
-          placeholderTextColor="rgba(20,26,34,0.46)"
-          style={{
-            height: 46,
-            borderRadius: 14,
-            paddingHorizontal: 14,
-            backgroundColor: "rgba(255,255,255,0.92)",
-            borderWidth: 1,
-            borderColor: "rgba(20,26,34,0.10)",
-            color: "#121826",
-            fontWeight: "700",
-          }}
-        />
+        <StudioSurface padding={14}>
+          <TextInput
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            placeholder="Search notes"
+            placeholderTextColor="rgba(30,35,41,0.42)"
+            style={{
+              height: 50,
+              borderRadius: 18,
+              paddingHorizontal: 16,
+              backgroundColor: "rgba(255,252,247,0.84)",
+              borderWidth: 1,
+              borderColor: STUDIO.line,
+              color: STUDIO.ink,
+              fontWeight: "700",
+            }}
+          />
 
-        <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}>
-          <Text style={{ color: TEXT_MUTED, fontWeight: "800" }}>Sort</Text>
+          <View
+            style={{
+              flexDirection: "row",
+              gap: 10,
+              alignItems: "center",
+              marginTop: 12,
+              flexWrap: "wrap",
+            }}
+          >
+            <Text style={{ color: STUDIO.muted, fontWeight: "800" }}>Sort</Text>
           {(["updated", "title"] as const).map((mode) => {
             const selected = sortMode === mode;
             return (
@@ -532,14 +571,16 @@ export default function Explore() {
                   paddingHorizontal: 12,
                   paddingVertical: 8,
                   borderRadius: 999,
-                  backgroundColor: selected ? "#121826" : "rgba(20,26,34,0.06)",
+                  backgroundColor: selected
+                    ? "rgba(35,52,70,0.92)"
+                    : "rgba(255,250,244,0.72)",
                   borderWidth: 1,
-                  borderColor: selected ? "#121826" : "rgba(20,26,34,0.12)",
+                  borderColor: selected ? "rgba(255,248,239,0.22)" : STUDIO.line,
                 }}
               >
                 <Text
                   style={{
-                    color: selected ? "#fff" : "#121826",
+                    color: selected ? "#FFF8EF" : STUDIO.ink,
                     fontWeight: "900",
                     fontSize: 12,
                   }}
@@ -549,132 +590,80 @@ export default function Explore() {
               </Pressable>
             );
           })}
-        </View>
+          </View>
+        </StudioSurface>
 
         {bannerMessage ? (
           <Pressable
             onPress={() => setBannerMessage(null)}
             style={{
-              borderRadius: 14,
+              borderRadius: 18,
               paddingHorizontal: 14,
               paddingVertical: 12,
-              backgroundColor: "rgba(21,128,61,0.10)",
+              backgroundColor: "rgba(62,107,76,0.10)",
               borderWidth: 1,
-              borderColor: "rgba(21,128,61,0.18)",
+              borderColor: "rgba(62,107,76,0.18)",
             }}
           >
-            <Text style={{ color: SUCCESS, fontWeight: "800" }}>{bannerMessage}</Text>
+            <Text style={{ color: STUDIO.success, fontWeight: "800" }}>{bannerMessage}</Text>
           </Pressable>
         ) : null}
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 28 }}>
+      <ScrollView
+        contentContainerStyle={{
+          padding: 20,
+          paddingBottom: insets.bottom + 28,
+        }}
+      >
         {loading ? (
-          <View
-            style={{
-              marginTop: 56,
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 10,
-              backgroundColor: "rgba(255,255,255,0.72)",
-              borderWidth: 1,
-              borderColor: "rgba(20,26,34,0.10)",
-              borderRadius: 18,
-              paddingVertical: 26,
-              paddingHorizontal: 18,
-            }}
-          >
+          <StudioSurface>
+            <View style={{ alignItems: "center", justifyContent: "center", gap: 10, paddingVertical: 20 }}>
             <Text style={{ fontSize: 18, fontWeight: "900", color: "#121826" }}>
               Loading notes
             </Text>
-            <Text style={{ color: TEXT_MUTED, textAlign: "center", maxWidth: 320 }}>
+              <Text style={{ color: STUDIO.muted, textAlign: "center", maxWidth: 320 }}>
               Pulling your latest library and preview data now.
             </Text>
-          </View>
+            </View>
+          </StudioSurface>
         ) : refreshError ? (
-          <View
-            style={{
-              marginTop: 56,
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 10,
-              backgroundColor: "rgba(245,158,11,0.14)",
-              borderWidth: 1,
-              borderColor: "rgba(146,64,14,0.16)",
-              borderRadius: 18,
-              paddingVertical: 26,
-              paddingHorizontal: 18,
-            }}
-          >
+          <StudioSurface>
+            <View style={{ alignItems: "center", justifyContent: "center", gap: 10, paddingVertical: 20 }}>
             <Text style={{ fontSize: 18, fontWeight: "900", color: "#121826" }}>
               Library unavailable
             </Text>
-            <Text style={{ color: TEXT_MUTED, textAlign: "center", maxWidth: 320 }}>
+              <Text style={{ color: STUDIO.muted, textAlign: "center", maxWidth: 320 }}>
               {refreshError}
             </Text>
             <HeaderButton label="Retry" onPress={refresh} primary />
-          </View>
+            </View>
+          </StudioSurface>
         ) : grid.length === 0 && notes.length === 0 ? (
-          <View
-            style={{
-              marginTop: 70,
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 10,
-              backgroundColor: "rgba(20,26,34,0.04)",
-              borderWidth: 1,
-              borderColor: "rgba(20,26,34,0.12)",
-              borderRadius: 18,
-              paddingVertical: 26,
-              paddingHorizontal: 18,
-            }}
-          >
+          <StudioSurface>
+            <View style={{ alignItems: "center", justifyContent: "center", gap: 10, paddingVertical: 20 }}>
             <Text style={{ fontSize: 18, fontWeight: "900", color: "#121826" }}>
               No notes yet
             </Text>
-            <Text style={{ color: TEXT_MUTED, textAlign: "center", maxWidth: 320 }}>
+              <Text style={{ color: STUDIO.muted, textAlign: "center", maxWidth: 320 }}>
               Create your first note and it will show up here.
             </Text>
-            <Pressable
-              onPress={openCreateModal}
-              style={{
-                marginTop: 10,
-                backgroundColor: ACCENT,
-                paddingHorizontal: 18,
-                paddingVertical: 12,
-                borderRadius: 12,
-                shadowColor: "#2563EB",
-                shadowOpacity: 0.35,
-                shadowRadius: 10,
-                shadowOffset: { width: 0, height: 6 },
-                boxShadow: "0 10px 24px rgba(37,99,235,0.35)",
-              }}
-            >
-              <Text style={{ color: "#fff", fontWeight: "900" }}>Create a note</Text>
-            </Pressable>
-          </View>
+              <View style={{ marginTop: 10 }}>
+                <HeaderButton label="Create a note" onPress={openCreateModal} primary />
+              </View>
+            </View>
+          </StudioSurface>
         ) : grid.length === 0 ? (
-          <View
-            style={{
-              marginTop: 56,
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 10,
-              backgroundColor: "rgba(20,26,34,0.04)",
-              borderWidth: 1,
-              borderColor: "rgba(20,26,34,0.12)",
-              borderRadius: 18,
-              paddingVertical: 26,
-              paddingHorizontal: 18,
-            }}
-          >
+          <StudioSurface>
+            <View style={{ alignItems: "center", justifyContent: "center", gap: 10, paddingVertical: 20 }}>
             <Text style={{ fontSize: 18, fontWeight: "900", color: "#121826" }}>
               No matching notes
             </Text>
-            <Text style={{ color: TEXT_MUTED, textAlign: "center", maxWidth: 320 }}>
+              <Text style={{ color: STUDIO.muted, textAlign: "center", maxWidth: 320 }}>
               Try a different search or switch the sort to find what you need faster.
             </Text>
-          </View>
+            </View>
+          </StudioSurface>
         ) : (
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 18 }}>
             {grid.map((note) => {
@@ -683,17 +672,18 @@ export default function Explore() {
                 <View
                   key={note.id}
                   style={{
-                    width: 178,
-                    borderRadius: 16,
-                    padding: 10,
+                    width: 190,
+                    borderRadius: 28,
+                    padding: 12,
                     borderWidth: 1,
-                    borderColor: "rgba(20,26,34,0.12)",
-                    backgroundColor: "rgba(20,26,34,0.04)",
+                    borderColor: STUDIO.line,
+                    backgroundColor: "rgba(255,249,241,0.64)",
                     shadowColor: "#000",
-                    shadowOpacity: 0.2,
-                    shadowRadius: 10,
-                    shadowOffset: { width: 0, height: 6 },
-                    boxShadow: "0 10px 24px rgba(0,0,0,0.25)",
+                    shadowOpacity: 0.1,
+                    shadowRadius: 18,
+                    shadowOffset: { width: 0, height: 12 },
+                    boxShadow: "0 18px 36px rgba(56,42,26,0.12)",
+                    backdropFilter: "blur(10px)",
                   }}
                 >
                   <Pressable
@@ -714,17 +704,18 @@ export default function Explore() {
                       <Text
                         numberOfLines={1}
                         style={{
-                          fontSize: 16,
-                          fontWeight: "900",
-                          color: TEXT_MAIN,
+                          fontSize: 20,
+                          fontWeight: "700",
+                          color: STUDIO.ink,
+                          fontFamily: DISPLAY_FONT,
                         }}
                       >
                         {note.title || "No name"}
                       </Text>
                       <Text
                         style={{
-                          marginTop: 2,
-                          color: TEXT_MUTED,
+                          marginTop: 4,
+                          color: STUDIO.muted,
                           fontSize: 12,
                         }}
                       >
@@ -732,10 +723,12 @@ export default function Explore() {
                       </Text>
                       <Text
                         style={{
-                          marginTop: 4,
-                          color: TEXT_MUTED,
-                          fontSize: 12,
-                          fontWeight: "700",
+                          marginTop: 6,
+                          color: STUDIO.accentWarm,
+                          fontSize: 11,
+                          fontWeight: "900",
+                          letterSpacing: 0.7,
+                          textTransform: "uppercase",
                         }}
                       >
                         {note.kind === "infinite"
@@ -774,33 +767,41 @@ export default function Explore() {
           onPress={() => setCreateOpen(false)}
           style={{
             flex: 1,
-            backgroundColor: "rgba(0,0,0,0.55)",
+            backgroundColor: "rgba(32,23,16,0.42)",
             justifyContent: "center",
             padding: 20,
           }}
         >
-          <Pressable onPress={() => {}} style={{ alignSelf: "center", width: 360, maxWidth: "100%", backgroundColor: "#FFFFFF", borderRadius: 18, padding: 16, gap: 12, borderWidth: 1, borderColor: "rgba(20,26,34,0.12)", boxShadow: "0 18px 44px rgba(0,0,0,0.38)" }}>
-            <Text style={{ fontSize: 16, fontWeight: "900", color: "#121826" }}>Create note</Text>
-            <TextInput value={createTitle} onChangeText={setCreateTitle} placeholder="Note name" placeholderTextColor="rgba(20,26,34,0.46)" style={{ height: 46, borderRadius: 12, paddingHorizontal: 12, backgroundColor: "rgba(20,26,34,0.05)", borderWidth: 1, borderColor: "rgba(20,26,34,0.12)", color: "#121826", fontWeight: "700" }} autoFocus />
-            <Text style={{ color: TEXT_MUTED, fontWeight: "800", marginTop: 4 }}>Note type</Text>
-            <View style={{ flexDirection: "row", gap: 10 }}>
-              <Pressable onPress={() => setCreateMode("blank")} style={{ flex: 1, paddingVertical: 10, borderRadius: 12, borderWidth: 1, borderColor: createMode === "blank" ? "#121826" : "rgba(20,26,34,0.12)", backgroundColor: createMode === "blank" ? "rgba(20,26,34,0.08)" : "rgba(20,26,34,0.04)", alignItems: "center" }}><Text style={{ color: "#121826", fontWeight: "900" }}>Simple canvas</Text></Pressable>
-              <Pressable onPress={() => setCreateMode("infinite")} style={{ flex: 1, paddingVertical: 10, borderRadius: 12, borderWidth: 1, borderColor: createMode === "infinite" ? "#121826" : "rgba(20,26,34,0.12)", backgroundColor: createMode === "infinite" ? "rgba(20,26,34,0.08)" : "rgba(20,26,34,0.04)", alignItems: "center" }}><Text style={{ color: "#121826", fontWeight: "900" }}>Infinite canvas</Text></Pressable>
-              <Pressable onPress={() => setCreateMode("pdf")} style={{ flex: 1, paddingVertical: 10, borderRadius: 12, borderWidth: 1, borderColor: createMode === "pdf" ? "#121826" : "rgba(20,26,34,0.12)", backgroundColor: createMode === "pdf" ? "rgba(20,26,34,0.08)" : "rgba(20,26,34,0.04)", alignItems: "center" }}><Text style={{ color: "#121826", fontWeight: "900" }}>Import PDF</Text></Pressable>
+          <Pressable onPress={() => {}}>
+            <StudioModalCard width={380}>
+            <Text style={{ fontSize: 13, color: STUDIO.accentWarm, fontWeight: "900", letterSpacing: 1.1, textTransform: "uppercase" }}>New note</Text>
+            <StudioTitle size={28}>Create a fresh workspace.</StudioTitle>
+            <TextInput value={createTitle} onChangeText={setCreateTitle} placeholder="Note name" placeholderTextColor="rgba(30,35,41,0.46)" style={{ height: 48, borderRadius: 16, paddingHorizontal: 14, backgroundColor: "rgba(255,251,246,0.86)", borderWidth: 1, borderColor: STUDIO.line, color: STUDIO.ink, fontWeight: "700" }} autoFocus />
+            <Text style={{ color: STUDIO.muted, fontWeight: "800", marginTop: 4 }}>Note type</Text>
+            <View
+              style={{
+                flexDirection: "row",
+                gap: 10,
+                flexWrap: "wrap",
+              }}
+            >
+              <Pressable onPress={() => setCreateMode("blank")} style={{ flexGrow: 1, flexBasis: compactCreateOptions ? "100%" : 100, paddingVertical: 12, borderRadius: 16, borderWidth: 1, borderColor: createMode === "blank" ? STUDIO.lineStrong : STUDIO.line, backgroundColor: createMode === "blank" ? "rgba(35,52,70,0.08)" : "rgba(255,249,241,0.58)", alignItems: "center" }}><Text style={{ color: STUDIO.ink, fontWeight: "900" }}>Simple canvas</Text></Pressable>
+              <Pressable onPress={() => setCreateMode("infinite")} style={{ flexGrow: 1, flexBasis: compactCreateOptions ? "100%" : 100, paddingVertical: 12, borderRadius: 16, borderWidth: 1, borderColor: createMode === "infinite" ? STUDIO.lineStrong : STUDIO.line, backgroundColor: createMode === "infinite" ? "rgba(35,52,70,0.08)" : "rgba(255,249,241,0.58)", alignItems: "center" }}><Text style={{ color: STUDIO.ink, fontWeight: "900" }}>Infinite canvas</Text></Pressable>
+              <Pressable onPress={() => setCreateMode("pdf")} style={{ flexGrow: 1, flexBasis: compactCreateOptions ? "100%" : 100, paddingVertical: 12, borderRadius: 16, borderWidth: 1, borderColor: createMode === "pdf" ? STUDIO.lineStrong : STUDIO.line, backgroundColor: createMode === "pdf" ? "rgba(35,52,70,0.08)" : "rgba(255,249,241,0.58)", alignItems: "center" }}><Text style={{ color: STUDIO.ink, fontWeight: "900" }}>Import PDF</Text></Pressable>
             </View>
             {createMode === "pdf" ? (
               <View style={{ gap: 8 }}>
                 <Pressable onPress={importPdf} style={{ paddingVertical: 10, borderRadius: 12, borderWidth: 1, borderColor: "rgba(20,26,34,0.14)", backgroundColor: "rgba(20,26,34,0.06)", alignItems: "center", opacity: createBusy ? 0.65 : 1 }}>
-                  <Text style={{ color: "#121826", fontWeight: "900" }}>{createBusy ? "Importing..." : "Choose PDF"}</Text>
+                  <Text style={{ color: STUDIO.ink, fontWeight: "900" }}>{createBusy ? "Importing..." : "Choose PDF"}</Text>
                 </Pressable>
-                <Text style={{ color: TEXT_MUTED, fontSize: 12 }}>{createPdfName ? `${createPdfName} (${createPdfPageCount} page(s) ready)` : "No PDF selected"}</Text>
+                <Text style={{ color: STUDIO.muted, fontSize: 12 }}>{createPdfName ? `${createPdfName} (${createPdfPageCount} page(s) ready)` : "No PDF selected"}</Text>
               </View>
             ) : createMode === "infinite" ? (
-              <Text style={{ color: TEXT_MUTED, fontSize: 12 }}>Creates a large freeform board for diagrams, brainstorming, and long-form notes.</Text>
+              <Text style={{ color: STUDIO.muted, fontSize: 12 }}>Creates a large freeform board for diagrams, brainstorming, and long-form notes.</Text>
             ) : (
-              <Text style={{ color: TEXT_MUTED, fontSize: 12 }}>Creates the standard fixed-size page canvas you already have.</Text>
+              <Text style={{ color: STUDIO.muted, fontSize: 12 }}>Creates the standard fixed-size page canvas you already have.</Text>
             )}
-            <Text style={{ color: TEXT_MUTED, fontWeight: "800", marginTop: 4 }}>Cover color</Text>
+            <Text style={{ color: STUDIO.muted, fontWeight: "800", marginTop: 4 }}>Cover color</Text>
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
               {COVER_SWATCHES.map((color) => {
                 const selected = color.toLowerCase() === createCover.toLowerCase();
@@ -810,35 +811,42 @@ export default function Explore() {
             </View>
             {createError ? <Text style={{ color: "#b42318", fontWeight: "700", fontSize: 12 }}>{createError}</Text> : null}
             <View style={{ flexDirection: "row", gap: 10, marginTop: 6 }}>
-              <Pressable onPress={() => setCreateOpen(false)} style={{ flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: "rgba(20,26,34,0.06)", borderWidth: 1, borderColor: "rgba(20,26,34,0.12)", alignItems: "center" }}><Text style={{ color: "#121826", fontWeight: "900" }}>Cancel</Text></Pressable>
-              <Pressable onPress={commitCreate} style={{ flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: ACCENT, alignItems: "center", opacity: createBusy || (createMode === "pdf" && !createPdfDoc) ? 0.65 : 1 }}><Text style={{ color: "#fff", fontWeight: "900" }}>Create</Text></Pressable>
+              <View style={{ flex: 1 }}><StudioButton label="Cancel" onPress={() => setCreateOpen(false)} /></View>
+              <View style={{ flex: 1 }}><StudioButton label="Create" onPress={commitCreate} tone="primary" disabled={createBusy || (createMode === "pdf" && !createPdfDoc)} /></View>
             </View>
+            </StudioModalCard>
           </Pressable>
         </Pressable>
       </Modal>
 
       <Modal visible={renameOpen} transparent animationType="fade" onRequestClose={() => setRenameOpen(false)}>
-        <Pressable onPress={() => setRenameOpen(false)} style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "center", padding: 20 }}>
-          <Pressable onPress={() => {}} style={{ alignSelf: "center", width: 340, maxWidth: "100%", backgroundColor: "#FFFFFF", borderRadius: 18, padding: 16, gap: 12, borderWidth: 1, borderColor: "rgba(20,26,34,0.12)", boxShadow: "0 18px 44px rgba(0,0,0,0.38)" }}>
-            <Text style={{ fontSize: 16, fontWeight: "900", color: "#121826" }}>Rename note</Text>
-            <TextInput value={renameValue} onChangeText={setRenameValue} placeholder="Note name" placeholderTextColor="rgba(20,26,34,0.46)" style={{ height: 46, borderRadius: 12, paddingHorizontal: 12, backgroundColor: "rgba(20,26,34,0.05)", borderWidth: 1, borderColor: "rgba(20,26,34,0.12)", color: "#121826", fontWeight: "700" }} autoFocus />
+        <Pressable onPress={() => setRenameOpen(false)} style={{ flex: 1, backgroundColor: "rgba(32,23,16,0.42)", justifyContent: "center", padding: 20 }}>
+          <Pressable onPress={() => {}}>
+            <StudioModalCard width={360}>
+            <Text style={{ fontSize: 13, color: STUDIO.accentWarm, fontWeight: "900", letterSpacing: 1.1, textTransform: "uppercase" }}>Refine title</Text>
+            <StudioTitle size={26}>Rename note.</StudioTitle>
+            <TextInput value={renameValue} onChangeText={setRenameValue} placeholder="Note name" placeholderTextColor="rgba(30,35,41,0.46)" style={{ height: 48, borderRadius: 16, paddingHorizontal: 14, backgroundColor: "rgba(255,251,246,0.86)", borderWidth: 1, borderColor: STUDIO.line, color: STUDIO.ink, fontWeight: "700" }} autoFocus />
             <View style={{ flexDirection: "row", gap: 10 }}>
-              <Pressable onPress={() => setRenameOpen(false)} style={{ flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: "rgba(20,26,34,0.06)", borderWidth: 1, borderColor: "rgba(20,26,34,0.12)", alignItems: "center" }}><Text style={{ color: "#121826", fontWeight: "900" }}>Cancel</Text></Pressable>
-              <Pressable onPress={commitRename} style={{ flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: ACCENT, alignItems: "center" }}><Text style={{ color: "#fff", fontWeight: "900" }}>Save</Text></Pressable>
+              <View style={{ flex: 1 }}><StudioButton label="Cancel" onPress={() => setRenameOpen(false)} /></View>
+              <View style={{ flex: 1 }}><StudioButton label="Save" onPress={commitRename} tone="primary" /></View>
             </View>
+            </StudioModalCard>
           </Pressable>
         </Pressable>
       </Modal>
 
       <Modal visible={deleteOpen} transparent animationType="fade" onRequestClose={() => setDeleteOpen(false)}>
-        <Pressable onPress={() => setDeleteOpen(false)} style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "center", padding: 20 }}>
-          <Pressable onPress={() => {}} style={{ alignSelf: "center", width: 340, maxWidth: "100%", backgroundColor: "#FFFFFF", borderRadius: 18, padding: 16, gap: 12, borderWidth: 1, borderColor: "rgba(20,26,34,0.12)", boxShadow: "0 18px 44px rgba(0,0,0,0.38)" }}>
-            <Text style={{ fontSize: 16, fontWeight: "900", color: "#121826" }}>Delete note?</Text>
-            <Text style={{ color: TEXT_MUTED }}>This cannot be undone.</Text>
+        <Pressable onPress={() => setDeleteOpen(false)} style={{ flex: 1, backgroundColor: "rgba(32,23,16,0.42)", justifyContent: "center", padding: 20 }}>
+          <Pressable onPress={() => {}}>
+            <StudioModalCard width={360}>
+            <Text style={{ fontSize: 13, color: STUDIO.danger, fontWeight: "900", letterSpacing: 1.1, textTransform: "uppercase" }}>Permanent action</Text>
+            <StudioTitle size={26}>Delete note?</StudioTitle>
+            <Text style={{ color: STUDIO.muted }}>This cannot be undone.</Text>
             <View style={{ flexDirection: "row", gap: 10 }}>
-              <Pressable onPress={() => setDeleteOpen(false)} style={{ flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: "rgba(20,26,34,0.06)", borderWidth: 1, borderColor: "rgba(20,26,34,0.12)", alignItems: "center" }}><Text style={{ color: "#121826", fontWeight: "900" }}>Cancel</Text></Pressable>
-              <Pressable onPress={commitDelete} style={{ flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: "#ff3b30", alignItems: "center" }}><Text style={{ color: "#fff", fontWeight: "900" }}>Delete</Text></Pressable>
+              <View style={{ flex: 1 }}><StudioButton label="Cancel" onPress={() => setDeleteOpen(false)} /></View>
+              <View style={{ flex: 1 }}><StudioButton label="Delete" onPress={commitDelete} tone="danger" /></View>
             </View>
+            </StudioModalCard>
           </Pressable>
         </Pressable>
       </Modal>

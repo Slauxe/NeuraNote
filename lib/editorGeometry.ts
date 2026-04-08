@@ -6,7 +6,17 @@ import {
   type Point,
   type Stroke,
 } from "@/lib/editorTypes";
-import type { NoteKind } from "@/lib/noteDocument";
+import type { NoteKind, PageSizePreset } from "@/lib/noteDocument";
+
+export function getPagePresetSize(preset: PageSizePreset) {
+  if (preset === "a4") {
+    return { width: 827, height: 1169 };
+  }
+  if (preset === "square") {
+    return { width: 1000, height: 1000 };
+  }
+  return { width: PAGE_W, height: PAGE_H };
+}
 
 export function getCanvasSize(noteKind: NoteKind) {
   return noteKind === "infinite"
@@ -319,4 +329,97 @@ export function splitStrokeByEraserPathPoints(
   }
 
   return changed ? parts : null;
+}
+
+export function getStrokeBoundsOnPage(stroke: Stroke) {
+  return {
+    minX: stroke.bbox.minX + stroke.dx,
+    minY: stroke.bbox.minY + stroke.dy,
+    maxX: stroke.bbox.maxX + stroke.dx,
+    maxY: stroke.bbox.maxY + stroke.dy,
+  };
+}
+
+export function getSelectionBounds(strokes: Stroke[]) {
+  if (strokes.length === 0) {
+    return { minX: 0, minY: 0, maxX: 0, maxY: 0, centerX: 0, centerY: 0 };
+  }
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const stroke of strokes) {
+    const bounds = getStrokeBoundsOnPage(stroke);
+    minX = Math.min(minX, bounds.minX);
+    minY = Math.min(minY, bounds.minY);
+    maxX = Math.max(maxX, bounds.maxX);
+    maxY = Math.max(maxY, bounds.maxY);
+  }
+
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    centerX: (minX + maxX) / 2,
+    centerY: (minY + maxY) / 2,
+  };
+}
+
+export function transformStroke(
+  stroke: Stroke,
+  transform: (point: Point) => Point,
+  nextId = uid(),
+) {
+  const translatedPoints = stroke.points.map((point) =>
+    transform({ x: point.x + stroke.dx, y: point.y + stroke.dy }),
+  );
+  const points = translatedPoints.map((point) => ({ ...point }));
+  const rebuiltAxisPath = (() => {
+    if (
+      (stroke.shapePreset !== "axis-2d" && stroke.shapePreset !== "axis-3d") ||
+      points.length < 2
+    ) {
+      return null;
+    }
+
+    const from = points[0];
+    const to = points[points.length - 1];
+    const line = `M ${from.x} ${from.y} L ${to.x} ${to.y}`;
+
+    if (stroke.dashed) return line;
+
+    const vx = to.x - from.x;
+    const vy = to.y - from.y;
+    const len = Math.max(1, Math.hypot(vx, vy));
+    const ux = vx / len;
+    const uy = vy / len;
+    const px = -uy;
+    const py = ux;
+    const size = 12;
+    const leftPoint = {
+      x: to.x - ux * size + px * (size * 0.45),
+      y: to.y - uy * size + py * (size * 0.45),
+    };
+    const rightPoint = {
+      x: to.x - ux * size - px * (size * 0.45),
+      y: to.y - uy * size - py * (size * 0.45),
+    };
+
+    return `${line} M ${to.x} ${to.y} L ${leftPoint.x} ${leftPoint.y} M ${to.x} ${to.y} L ${rightPoint.x} ${rightPoint.y}`;
+  })();
+
+  return {
+    ...stroke,
+    id: nextId,
+    points,
+    d: rebuiltAxisPath ?? pointsToSmoothPath(points),
+    axisOrigin: stroke.axisOrigin ? transform(stroke.axisOrigin) : stroke.axisOrigin,
+    axisHandle: stroke.axisHandle ? transform(stroke.axisHandle) : stroke.axisHandle,
+    dx: 0,
+    dy: 0,
+    bbox: computeBBox(points),
+  };
 }

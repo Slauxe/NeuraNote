@@ -7,7 +7,9 @@ import { saveBackgroundAsset } from "@/lib/webBackgroundAssets";
 
 const IMPORT_PAGE_W = 850;
 const IMPORT_PAGE_H = 1100;
-const MAX_IMPORT_PAGES = 25;
+const DEFAULT_MAX_IMPORT_PAGES = 25;
+const LARGE_FILE_MAX_IMPORT_PAGES = 15;
+const SMALL_FILE_MAX_IMPORT_PAGES = 40;
 const PDFJS_CDN_BASE =
   "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174";
 
@@ -97,7 +99,13 @@ async function renderPdfToPageBackgrounds(file: File): Promise<string[]> {
     disableWorker: true,
   });
   const doc = await loadingTask.promise;
-  const pageCount = Math.min(doc.numPages, MAX_IMPORT_PAGES);
+  const maxImportPages =
+    file.size <= 8 * 1024 * 1024
+      ? SMALL_FILE_MAX_IMPORT_PAGES
+      : file.size >= 20 * 1024 * 1024
+        ? LARGE_FILE_MAX_IMPORT_PAGES
+        : DEFAULT_MAX_IMPORT_PAGES;
+  const pageCount = Math.min(doc.numPages, maxImportPages);
   const pageImages: string[] = [];
 
   for (let i = 1; i <= pageCount; i++) {
@@ -108,7 +116,10 @@ async function renderPdfToPageBackgrounds(file: File): Promise<string[]> {
       IMPORT_PAGE_H / baseViewport.height,
     );
     const viewport = page.getViewport({
-      scale: Math.max(0.5, Math.min(2.5, fitScale)),
+      scale: Math.max(
+        0.5,
+        Math.min(file.size > 20 * 1024 * 1024 ? 1.8 : 2.5, fitScale),
+      ),
     });
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.round(viewport.width));
@@ -117,7 +128,9 @@ async function renderPdfToPageBackgrounds(file: File): Promise<string[]> {
     if (!ctx) continue;
 
     await page.render({ canvasContext: ctx as any, viewport }).promise;
-    pageImages.push(canvas.toDataURL("image/jpeg", 0.9));
+    pageImages.push(
+      canvas.toDataURL("image/jpeg", file.size > 20 * 1024 * 1024 ? 0.78 : 0.9),
+    );
   }
 
   return pageImages;
@@ -164,8 +177,15 @@ export async function importPdfAsNoteDoc(): Promise<ImportedPdfPayload | null> {
     let warning: string | null = null;
     if (file.size > 20 * 1024 * 1024) {
       warning = "Large PDF imported. Performance may be slower.";
-    } else if (pages.length >= MAX_IMPORT_PAGES) {
-      warning = `Imported first ${MAX_IMPORT_PAGES} pages.`;
+    } else if (
+      pages.length >=
+      (file.size <= 8 * 1024 * 1024
+        ? SMALL_FILE_MAX_IMPORT_PAGES
+        : file.size >= 20 * 1024 * 1024
+          ? LARGE_FILE_MAX_IMPORT_PAGES
+          : DEFAULT_MAX_IMPORT_PAGES)
+    ) {
+      warning = `Imported first ${pages.length} pages.`;
     }
 
     return {
@@ -207,15 +227,19 @@ export async function importPdfAsNoteDoc(): Promise<ImportedPdfPayload | null> {
   const { PDFDocument } = await import("pdf-lib");
   const pdf = await PDFDocument.load(bytes, { ignoreEncryption: true });
   const fullCount = pdf.getPageCount();
-  const pageCount = Math.min(fullCount, MAX_IMPORT_PAGES);
+  const maxImportPages =
+    (asset.size ?? 0) > 20 * 1024 * 1024
+      ? LARGE_FILE_MAX_IMPORT_PAGES
+      : DEFAULT_MAX_IMPORT_PAGES;
+  const pageCount = Math.min(fullCount, maxImportPages);
   const localPdfUri = await copyPdfToLocalImports(asset.uri);
 
   return {
     fileName: asset.name ?? "Imported PDF",
     pageCount,
     warning:
-      fullCount > MAX_IMPORT_PAGES
-        ? `Imported first ${MAX_IMPORT_PAGES} pages.`
+      fullCount > maxImportPages
+        ? `Imported first ${maxImportPages} pages.`
         : null,
     noteDoc: {
       version: 1,

@@ -12,6 +12,8 @@ import type {
   InfiniteBoard,
   InfiniteBoardBackgroundStyle,
   NoteDoc,
+  NoteMetadata,
+  NoteTextItem,
   NoteKind,
 } from "@/lib/noteDocument";
 import {
@@ -31,19 +33,23 @@ type UseNotePersistenceArgs = {
   router: Router;
   isPointerDownRef: RefObject<boolean>;
   pages: Stroke[][];
+  pageTextItems: NoteTextItem[][];
   pageBackgrounds: PageBackground[];
   currentPageIndex: number;
   strokes: Stroke[];
   noteKind: NoteKind;
   boardSize: InfiniteBoard | null;
   boardBackgroundStyle: InfiniteBoardBackgroundStyle;
+  metadata: NoteMetadata;
   emptyBackground: PageBackground;
   resetCanvasState: () => void;
   setNoteKind: (kind: NoteKind) => void;
   setBoardSize: (board: InfiniteBoard | null) => void;
   setBoardBackgroundStyle: (style: InfiniteBoardBackgroundStyle) => void;
+  setMetadata: (metadata: NoteMetadata) => void;
   loadSnapshot: (snapshot: {
     pages: Stroke[][];
+    pageTextItems: NoteTextItem[][];
     pageBackgrounds: PageBackground[];
     currentPageIndex: number;
     strokes: Stroke[];
@@ -52,11 +58,13 @@ type UseNotePersistenceArgs = {
 
 type Snapshot = {
   pages: Stroke[][];
+  pageTextItems: NoteTextItem[][];
   pageBackgrounds: PageBackground[];
   currentPageIndex: number;
   noteKind: NoteKind;
   boardSize: InfiniteBoard | null;
   boardBackgroundStyle: InfiniteBoardBackgroundStyle;
+  metadata: NoteMetadata;
 };
 
 const SAVE_DEBOUNCE_MS = 450;
@@ -65,6 +73,7 @@ const STATUS_RESET_MS = 1400;
 function buildSnapshotDoc(snapshot: Snapshot): NoteDoc {
   return buildDocFromPages(
     snapshot.pages,
+    snapshot.pageTextItems,
     snapshot.pageBackgrounds,
     snapshot.currentPageIndex,
     snapshot.noteKind,
@@ -74,6 +83,7 @@ function buildSnapshotDoc(snapshot: Snapshot): NoteDoc {
           backgroundStyle: snapshot.boardBackgroundStyle,
         }
       : null,
+    snapshot.metadata,
   );
 }
 
@@ -83,16 +93,19 @@ export function useNotePersistence({
   isPointerDownRef,
   pages,
   pageBackgrounds,
+  pageTextItems,
   currentPageIndex,
   strokes,
   noteKind,
   boardSize,
   boardBackgroundStyle,
+  metadata,
   emptyBackground,
   resetCanvasState,
   setNoteKind,
   setBoardSize,
   setBoardBackgroundStyle,
+  setMetadata,
   loadSnapshot,
 }: UseNotePersistenceArgs) {
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
@@ -106,11 +119,13 @@ export function useNotePersistence({
   const hydratingRef = useRef(false);
   const snapshotRef = useRef<Snapshot>({
     pages,
+    pageTextItems,
     pageBackgrounds,
     currentPageIndex,
     noteKind,
     boardSize,
     boardBackgroundStyle,
+    metadata,
   });
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -215,19 +230,23 @@ export function useNotePersistence({
   useEffect(() => {
     snapshotRef.current = {
       pages,
+      pageTextItems,
       pageBackgrounds,
-      currentPageIndex,
-      noteKind,
-      boardSize,
-      boardBackgroundStyle,
-    };
+    currentPageIndex,
+    noteKind,
+    boardSize,
+    boardBackgroundStyle,
+    metadata,
+  };
   }, [
     pages,
+    pageTextItems,
     pageBackgrounds,
     currentPageIndex,
     noteKind,
     boardSize,
     boardBackgroundStyle,
+    metadata,
   ]);
 
   useEffect(() => {
@@ -296,8 +315,10 @@ export function useNotePersistence({
         setNoteKind(normalized.kind);
         setBoardSize(normalized.board);
         setBoardBackgroundStyle(normalized.board?.backgroundStyle ?? "grid");
+        setMetadata(normalized.metadata);
         loadSnapshot({
           pages: normalized.pages,
+          pageTextItems: normalized.pageTextItems,
           pageBackgrounds: migratedBackgrounds.backgrounds,
           currentPageIndex: normalized.currentPageIndex,
           strokes: pageStrokes,
@@ -305,11 +326,13 @@ export function useNotePersistence({
 
         snapshotRef.current = {
           pages: normalized.pages,
+          pageTextItems: normalized.pageTextItems,
           pageBackgrounds: migratedBackgrounds.backgrounds,
           currentPageIndex: normalized.currentPageIndex,
           noteKind: normalized.kind,
           boardSize: normalized.board,
           boardBackgroundStyle: normalized.board?.backgroundStyle ?? "grid",
+          metadata: normalized.metadata,
         };
 
         if (shouldUseDraft) {
@@ -329,8 +352,16 @@ export function useNotePersistence({
           setNoteKind("page");
           setBoardSize(null);
           setBoardBackgroundStyle("grid");
+          setMetadata({
+            description: "",
+            tags: [],
+            bookmarkedPages: [],
+            pageTemplate: "blank",
+            pageSizePreset: "letter",
+          });
           loadSnapshot({
             pages: [[]],
+            pageTextItems: [[]],
             pageBackgrounds: [{ ...emptyBackground }],
             currentPageIndex: 0,
             strokes: [],
@@ -356,6 +387,7 @@ export function useNotePersistence({
     setNoteKind,
     setBoardSize,
     setBoardBackgroundStyle,
+    setMetadata,
     loadSnapshot,
     clearSaveTimer,
     clearStatusTimer,
@@ -385,11 +417,13 @@ export function useNotePersistence({
     activeNoteId,
     hydrating,
     pages,
+    pageTextItems,
     pageBackgrounds,
     currentPageIndex,
     noteKind,
     boardSize,
     boardBackgroundStyle,
+    metadata,
     isPointerDownRef,
     clearSaveTimer,
     persistCurrentSnapshot,

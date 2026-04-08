@@ -1,6 +1,8 @@
 import React from "react";
 import { Modal, Pressable, Text, View } from "react-native";
 
+import { STUDIO, StudioButton, StudioModalCard, StudioTitle } from "@/components/studio/StudioPrimitives";
+
 type ToolbarLayoutModalProps = {
   visible: boolean;
   toolbarOrientation: "horizontal" | "vertical";
@@ -25,28 +27,17 @@ export function ToolbarLayoutModal({
         onPress={onClose}
         style={{
           flex: 1,
-          backgroundColor: "rgba(0,0,0,0.45)",
+          backgroundColor: "rgba(32,23,16,0.42)",
           justifyContent: "center",
           padding: 20,
         }}
       >
-        <Pressable
-          onPress={() => {}}
-          style={{
-            alignSelf: "center",
-            width: 320,
-            maxWidth: "100%",
-            backgroundColor: "#FFFFFF",
-            borderRadius: 18,
-            padding: 16,
-            gap: 12,
-            borderWidth: 1,
-            borderColor: "rgba(20,26,34,0.12)",
-          }}
-        >
-          <Text style={{ fontSize: 16, fontWeight: "900", color: "#121826" }}>
-            Toolbar layout
+        <Pressable onPress={() => {}}>
+          <StudioModalCard width={340}>
+          <Text style={{ fontSize: 12, color: STUDIO.accentWarm, fontWeight: "900", letterSpacing: 1.1, textTransform: "uppercase" }}>
+            Tool rail
           </Text>
+          <StudioTitle size={26}>Toolbar layout</StudioTitle>
 
           <View style={{ flexDirection: "row", gap: 10 }}>
             <Pressable
@@ -54,20 +45,20 @@ export function ToolbarLayoutModal({
               style={{
                 flex: 1,
                 paddingVertical: 12,
-                borderRadius: 12,
+                borderRadius: 16,
                 borderWidth: 1,
                 borderColor:
                   toolbarOrientation === "horizontal"
-                    ? "#fff"
-                    : "rgba(20,26,34,0.18)",
+                    ? STUDIO.lineStrong
+                    : STUDIO.line,
                 backgroundColor:
                   toolbarOrientation === "horizontal"
-                    ? "rgba(255,255,255,0.14)"
-                    : "rgba(255,255,255,0.06)",
+                    ? "rgba(35,52,70,0.08)"
+                    : "rgba(255,249,241,0.56)",
                 alignItems: "center",
               }}
             >
-              <Text style={{ color: "#121826", fontWeight: "900" }}>
+              <Text style={{ color: STUDIO.ink, fontWeight: "900" }}>
                 Horizontal
               </Text>
             </Pressable>
@@ -77,38 +68,27 @@ export function ToolbarLayoutModal({
               style={{
                 flex: 1,
                 paddingVertical: 12,
-                borderRadius: 12,
+                borderRadius: 16,
                 borderWidth: 1,
                 borderColor:
                   toolbarOrientation === "vertical"
-                    ? "#fff"
-                    : "rgba(20,26,34,0.18)",
+                    ? STUDIO.lineStrong
+                    : STUDIO.line,
                 backgroundColor:
                   toolbarOrientation === "vertical"
-                    ? "rgba(255,255,255,0.14)"
-                    : "rgba(255,255,255,0.06)",
+                    ? "rgba(35,52,70,0.08)"
+                    : "rgba(255,249,241,0.56)",
                 alignItems: "center",
               }}
             >
-              <Text style={{ color: "#121826", fontWeight: "900" }}>
+              <Text style={{ color: STUDIO.ink, fontWeight: "900" }}>
                 Vertical
               </Text>
             </Pressable>
           </View>
 
-          <Pressable
-            onPress={onClose}
-            style={{
-              paddingVertical: 12,
-              borderRadius: 12,
-              backgroundColor: "rgba(20,26,34,0.06)",
-              borderWidth: 1,
-              borderColor: "rgba(20,26,34,0.12)",
-              alignItems: "center",
-            }}
-          >
-            <Text style={{ color: "#121826", fontWeight: "900" }}>Close</Text>
-          </Pressable>
+          <StudioButton label="Close" onPress={onClose} />
+          </StudioModalCard>
         </Pressable>
       </Pressable>
     </Modal>

@@ -97,6 +97,7 @@ describe("editorDocument", () => {
         ],
         [],
       ],
+      [[], []],
       [
         {
           dataUrl: null,
@@ -128,6 +129,7 @@ describe("editorDocument", () => {
       {
         id: "page-1",
         strokes: [expect.objectContaining({ id: "stroke-1" })],
+        textItems: [],
         backgroundAssetId: "bg-asset-1",
         backgroundPdfUri: "file:///tmp/doc.pdf",
         backgroundPdfPageNumber: 2,
@@ -135,6 +137,7 @@ describe("editorDocument", () => {
       {
         id: "page-2",
         strokes: [],
+        textItems: [],
       },
     ]);
   });
