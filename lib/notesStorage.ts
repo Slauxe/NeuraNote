@@ -7,11 +7,23 @@ import { deleteBackgroundAsset } from "./webBackgroundAssets";
 export type { NoteDoc } from "./noteDocument";
 
 export type NoteMeta = {
+  type: "note";
   id: string;
   title: string;
   updatedAt: number; // epoch ms
   coverColor?: string; // hex like "#8B5CF6"
+  parentId?: string | null;
 };
+
+export type FolderMeta = {
+  type: "folder";
+  id: string;
+  title: string;
+  updatedAt: number; // epoch ms
+  parentId?: string | null;
+};
+
+export type LibraryItemMeta = NoteMeta | FolderMeta;
 
 type NoteFile = {
   id: string;
@@ -24,6 +36,11 @@ type NoteFile = {
 type NotesIndexFile = {
   version: 1;
   notes: NoteMeta[];
+};
+
+type LibraryIndexFile = {
+  version: 2;
+  items: LibraryItemMeta[];
 };
 
 type NoteDraftFile = {
@@ -137,30 +154,105 @@ export async function ensureNotesDir(): Promise<void> {
 
 async function loadIndex(): Promise<NotesIndexFile> {
   await ensureNotesDir();
-  const idx = await readJson<NotesIndexFile>(indexPath());
-  if (idx && idx.version === 1 && Array.isArray(idx.notes)) return idx;
+  const raw = await readJson<NotesIndexFile | LibraryIndexFile>(indexPath());
+  if (raw && raw.version === 2 && Array.isArray((raw as LibraryIndexFile).items)) {
+    return {
+      version: 1,
+      notes: (raw as LibraryIndexFile).items
+        .filter((item): item is NoteMeta => item?.type === "note")
+        .map((item) => ({ ...item })),
+    };
+  }
+  if (raw && raw.version === 1 && Array.isArray((raw as NotesIndexFile).notes)) {
+    return raw as NotesIndexFile;
+  }
 
   // If index is missing/corrupt, rebuild minimal index by scanning folder
+  const rebuilt = await rebuildIndexFromFiles();
+  await writeJsonAtomic(indexPath(), rebuilt);
+  return {
+    version: 1,
+    notes: rebuilt.items.filter((item): item is NoteMeta => item.type === "note"),
+  };
+}
+
+async function loadLibraryIndex(): Promise<LibraryIndexFile> {
+  await ensureNotesDir();
+  const raw = await readJson<NotesIndexFile | LibraryIndexFile>(indexPath());
+  if (raw && raw.version === 2 && Array.isArray((raw as LibraryIndexFile).items)) {
+    return sanitizeLibraryIndex(raw as LibraryIndexFile);
+  }
+  if (raw && raw.version === 1 && Array.isArray((raw as NotesIndexFile).notes)) {
+    const migrated = migrateLegacyIndex(raw as NotesIndexFile);
+    await writeJsonAtomic(indexPath(), migrated);
+    return migrated;
+  }
+
   const rebuilt = await rebuildIndexFromFiles();
   await writeJsonAtomic(indexPath(), rebuilt);
   return rebuilt;
 }
 
-async function saveIndex(idx: NotesIndexFile): Promise<void> {
+async function saveLibraryIndex(idx: LibraryIndexFile): Promise<void> {
   await ensureNotesDir();
-  await writeJsonAtomic(indexPath(), idx);
+  await writeJsonAtomic(indexPath(), sanitizeLibraryIndex(idx));
 }
 
-async function rebuildIndexFromFiles(): Promise<NotesIndexFile> {
+function normalizeParentId(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function sanitizeLibraryIndex(idx: LibraryIndexFile): LibraryIndexFile {
+  return {
+    version: 2,
+    items: idx.items
+      .filter((item) => item && typeof item.id === "string" && typeof item.title === "string")
+      .map((item) => {
+        if (item.type === "folder") {
+          return {
+            type: "folder",
+            id: item.id,
+            title: item.title,
+            updatedAt: Number.isFinite(item.updatedAt) ? item.updatedAt : now(),
+            parentId: normalizeParentId(item.parentId),
+          } satisfies FolderMeta;
+        }
+        return {
+          type: "note",
+          id: item.id,
+          title: item.title,
+          updatedAt: Number.isFinite(item.updatedAt) ? item.updatedAt : now(),
+          coverColor: item.coverColor,
+          parentId: normalizeParentId(item.parentId),
+        } satisfies NoteMeta;
+      }),
+  };
+}
+
+function migrateLegacyIndex(idx: NotesIndexFile): LibraryIndexFile {
+  return {
+    version: 2,
+    items: idx.notes.map((note) => ({
+      type: "note" as const,
+      id: note.id,
+      title: note.title,
+      updatedAt: note.updatedAt,
+      coverColor: note.coverColor,
+      parentId: null,
+    })),
+  };
+}
+
+async function rebuildIndexFromFiles(): Promise<LibraryIndexFile> {
   if (Platform.OS === "web") {
-    return { version: 1, notes: [] };
+    return { version: 2, items: [] };
   }
 
   await ensureNotesDir();
   const dir = notesDir();
   const files = await FileSystem.readDirectoryAsync(dir);
 
-  const notes: NoteMeta[] = [];
+  const items: LibraryItemMeta[] = [];
   for (const f of files) {
     if (!f.endsWith(".json")) continue;
     if (f === INDEX_FILE_NAME) continue;
@@ -170,16 +262,18 @@ async function rebuildIndexFromFiles(): Promise<NotesIndexFile> {
     const nf = await readJson<NoteFile>(notePath(id));
     if (!nf) continue;
 
-    notes.push({
+    items.push({
+      type: "note",
       id: nf.id,
       title: nf.title,
       updatedAt: nf.updatedAt,
       coverColor: nf.coverColor,
+      parentId: null,
     });
   }
 
-  notes.sort((a, b) => b.updatedAt - a.updatedAt);
-  return { version: 1, notes };
+  items.sort((a, b) => b.updatedAt - a.updatedAt);
+  return { version: 2, items };
 }
 
 function newId(): string {
@@ -202,8 +296,49 @@ function collectBackgroundAssetIds(doc: NoteDoc | null | undefined) {
 
 /** List note metadata (for Explore UI). Sorted by updatedAt desc. */
 export async function listNotes(): Promise<NoteMeta[]> {
-  const idx = await loadIndex();
-  return [...idx.notes].sort((a, b) => b.updatedAt - a.updatedAt);
+  const idx = await loadLibraryIndex();
+  return idx.items
+    .filter((item): item is NoteMeta => item.type === "note")
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+/** List all library items, including folders. */
+export async function listLibraryItems(): Promise<LibraryItemMeta[]> {
+  const idx = await loadLibraryIndex();
+  return [...idx.items].sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+export async function createFolder(
+  title = "New folder",
+  parentId: string | null = null,
+): Promise<string> {
+  const idx = await loadLibraryIndex();
+  if (parentId && !idx.items.some((item) => item.type === "folder" && item.id === parentId)) {
+    throw new Error("Parent folder not found.");
+  }
+
+  const id = newId();
+  const t = now();
+  idx.items.unshift({
+    type: "folder",
+    id,
+    title,
+    updatedAt: t,
+    parentId: normalizeParentId(parentId),
+  });
+  await saveLibraryIndex(idx);
+  return id;
+}
+
+export async function renameFolder(id: string, title: string): Promise<void> {
+  const idx = await loadLibraryIndex();
+  const folder = idx.items.find(
+    (item): item is FolderMeta => item.type === "folder" && item.id === id,
+  );
+  if (!folder) throw new Error("Folder not found.");
+  folder.title = title;
+  folder.updatedAt = now();
+  await saveLibraryIndex(idx);
 }
 
 /** Create a new note file + add it to index.json. Returns the new noteId. */
@@ -211,7 +346,13 @@ export async function createNote(
   title = "No name",
   coverColor = "#8B5CF6",
   initialDoc?: NoteDoc,
+  parentId: string | null = null,
 ): Promise<string> {
+  const idx = await loadLibraryIndex();
+  if (parentId && !idx.items.some((item) => item.type === "folder" && item.id === parentId)) {
+    throw new Error("Parent folder not found.");
+  }
+
   const id = newId();
   const t = now();
 
@@ -227,12 +368,15 @@ export async function createNote(
   await ensureNotesDir();
   await writeJsonAtomic(notePath(id), file);
 
-  const idx = await loadIndex();
-  const next: NotesIndexFile = {
-    version: 1,
-    notes: [{ id, title, updatedAt: t, coverColor }, ...idx.notes],
-  };
-  await saveIndex(next);
+  idx.items.unshift({
+    type: "note",
+    id,
+    title,
+    updatedAt: t,
+    coverColor,
+    parentId: normalizeParentId(parentId),
+  });
+  await saveLibraryIndex(idx);
 
   return id;
 }
@@ -250,6 +394,7 @@ export async function duplicateNote(id: string): Promise<string> {
     duplicateTitle,
     existing.meta.coverColor ?? "#8B5CF6",
     duplicatedDoc,
+    existing.meta.parentId ?? null,
   );
 }
 
@@ -258,15 +403,21 @@ export async function loadNote(
   id: string,
 ): Promise<{ meta: NoteMeta; doc: NoteDoc } | null> {
   await ensureNotesDir();
+  const idx = await loadLibraryIndex();
+  const metaEntry = idx.items.find(
+    (item): item is NoteMeta => item.type === "note" && item.id === id,
+  );
   const nf = await readJson<NoteFile>(notePath(id));
   if (!nf) return null;
 
   return {
     meta: {
+      type: "note",
       id: nf.id,
       title: nf.title,
       updatedAt: nf.updatedAt,
       coverColor: nf.coverColor,
+      parentId: metaEntry?.parentId ?? null,
     },
     doc:
       nf.doc ?? createEmptyNoteDoc(),
@@ -305,13 +456,20 @@ export async function saveNote(
   await writeJsonAtomic(path, nextFile);
 
   // Update index entry
-  const idx = await loadIndex();
-  const without = idx.notes.filter((n) => n.id !== id);
-  const nextIdx: NotesIndexFile = {
-    version: 1,
-    notes: [{ id, title, updatedAt: t, coverColor }, ...without],
-  };
-  await saveIndex(nextIdx);
+  const idx = await loadLibraryIndex();
+  const existingMeta = idx.items.find(
+    (item): item is NoteMeta => item.type === "note" && item.id === id,
+  );
+  const without = idx.items.filter((item) => item.id !== id);
+  without.unshift({
+    type: "note",
+    id,
+    title,
+    updatedAt: t,
+    coverColor,
+    parentId: existingMeta?.parentId ?? null,
+  });
+  await saveLibraryIndex({ version: 2, items: without });
 }
 
 /** Delete note file + remove from index.json. */
@@ -329,12 +487,12 @@ export async function deleteNote(id: string): Promise<void> {
   }
 
   // Update index
-  const idx = await loadIndex();
-  const next: NotesIndexFile = {
-    version: 1,
-    notes: idx.notes.filter((n) => n.id !== id),
+  const idx = await loadLibraryIndex();
+  const next: LibraryIndexFile = {
+    version: 2,
+    items: idx.items.filter((item) => item.id !== id),
   };
-  await saveIndex(next);
+  await saveLibraryIndex(next);
 
   if (Platform.OS === "web") {
     const assetIds = [
@@ -343,6 +501,100 @@ export async function deleteNote(id: string): Promise<void> {
     ];
     await Promise.all(assetIds.map((assetId) => deleteBackgroundAsset(assetId)));
   }
+}
+
+async function deleteNoteFileOnly(id: string): Promise<void> {
+  const existing = await loadNote(id).catch(() => null);
+  const existingDraft = await loadNoteDraft(id).catch(() => null);
+
+  if (Platform.OS === "web") {
+    localStorage.removeItem(notePath(id));
+    localStorage.removeItem(draftPath(id));
+  } else {
+    await FileSystem.deleteAsync(notePath(id), { idempotent: true });
+    await FileSystem.deleteAsync(draftPath(id), { idempotent: true });
+  }
+
+  if (Platform.OS === "web") {
+    const assetIds = [
+      ...collectBackgroundAssetIds(existing?.doc),
+      ...collectBackgroundAssetIds(existingDraft?.doc),
+    ];
+    await Promise.all(assetIds.map((assetId) => deleteBackgroundAsset(assetId)));
+  }
+}
+
+function collectDescendantFolderIds(items: LibraryItemMeta[], folderId: string): string[] {
+  const descendants: string[] = [];
+  const queue = [folderId];
+  while (queue.length) {
+    const current = queue.shift()!;
+    for (const item of items) {
+      if (item.type === "folder" && item.parentId === current) {
+        descendants.push(item.id);
+        queue.push(item.id);
+      }
+    }
+  }
+  return descendants;
+}
+
+export async function moveLibraryItem(
+  id: string,
+  parentId: string | null,
+): Promise<void> {
+  const idx = await loadLibraryIndex();
+  const item = idx.items.find((entry) => entry.id === id);
+  if (!item) throw new Error("Library item not found.");
+
+  const normalizedParentId = normalizeParentId(parentId);
+  if (
+    normalizedParentId &&
+    !idx.items.some((entry) => entry.type === "folder" && entry.id === normalizedParentId)
+  ) {
+    throw new Error("Destination folder not found.");
+  }
+
+  if (item.type === "folder") {
+    if (normalizedParentId === item.id) {
+      throw new Error("A folder cannot be moved into itself.");
+    }
+    const descendantIds = collectDescendantFolderIds(idx.items, item.id);
+    if (normalizedParentId && descendantIds.includes(normalizedParentId)) {
+      throw new Error("A folder cannot be moved into one of its descendants.");
+    }
+  }
+
+  item.parentId = normalizedParentId;
+  item.updatedAt = now();
+  await saveLibraryIndex(idx);
+}
+
+export async function deleteFolder(id: string): Promise<void> {
+  const idx = await loadLibraryIndex();
+  const folder = idx.items.find(
+    (item): item is FolderMeta => item.type === "folder" && item.id === id,
+  );
+  if (!folder) throw new Error("Folder not found.");
+
+  const descendantFolderIds = collectDescendantFolderIds(idx.items, id);
+  const folderIdsToDelete = new Set([id, ...descendantFolderIds]);
+  const noteIdsToDelete = idx.items
+    .filter(
+      (item): item is NoteMeta =>
+        item.type === "note" && folderIdsToDelete.has(item.parentId ?? ""),
+    )
+    .map((item) => item.id);
+
+  await Promise.all(noteIdsToDelete.map((noteId) => deleteNoteFileOnly(noteId)));
+
+  await saveLibraryIndex({
+    version: 2,
+    items: idx.items.filter(
+      (item) =>
+        !folderIdsToDelete.has(item.id) && !noteIdsToDelete.includes(item.id),
+    ),
+  });
 }
 
 /** Helpful for debugging / export later */

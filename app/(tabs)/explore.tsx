@@ -18,18 +18,25 @@ import {
   StudioBadge,
   StudioButton,
   StudioModalCard,
+  StudioModalHeader,
   StudioSurface,
   StudioTitle,
 } from "@/components/studio/StudioPrimitives";
 import { normalizeDocToPages } from "@/lib/editorDocument";
 import { PAGE_H, PAGE_W, type Stroke } from "@/lib/editorTypes";
 import {
+  createFolder,
   createNote,
+  deleteFolder,
   deleteNote,
   duplicateNote,
-  listNotes,
+  listLibraryItems,
   loadNote,
+  moveLibraryItem,
+  renameFolder,
   saveNote,
+  type FolderMeta,
+  type LibraryItemMeta,
   type NoteDoc,
   type NoteMeta,
 } from "../../lib/notesStorage";
@@ -55,6 +62,13 @@ type NoteCardData = NoteMeta & {
   pageCount: number;
   previewStrokes: Stroke[];
 };
+
+type FolderCardData = FolderMeta & {
+  childCount: number;
+  noteCount: number;
+};
+
+type LibraryCardData = NoteCardData | FolderCardData;
 
 function fmtDate(ms: number) {
   const d = new Date(ms);
@@ -168,6 +182,112 @@ function NotePreview({
   );
 }
 
+function FolderPreview({
+  coverColor,
+  childCount,
+  noteCount,
+}: {
+  coverColor: string;
+  childCount: number;
+  noteCount: number;
+}) {
+  return (
+    <View
+      style={{
+        width: 150,
+        height: 180,
+        borderRadius: 26,
+        overflow: "hidden",
+        backgroundColor: "rgba(255,250,244,0.95)",
+        borderWidth: 1,
+        borderColor: "rgba(68,48,29,0.12)",
+        shadowColor: "#000",
+        shadowOpacity: 0.14,
+        shadowRadius: 18,
+        shadowOffset: { width: 0, height: 12 },
+        boxShadow: "0 18px 34px rgba(56,42,26,0.14)",
+      }}
+    >
+      <View
+        style={{
+          position: "absolute",
+          inset: 0,
+          backgroundColor: coverColor,
+          opacity: 0.14,
+        }}
+      />
+      <View
+        style={{
+          position: "absolute",
+          inset: 0,
+          backgroundColor: "rgba(255,250,244,0.44)",
+        }}
+      />
+      <View
+        style={{
+          position: "absolute",
+          top: 12,
+          left: 12,
+          right: 12,
+          zIndex: 2,
+          flexDirection: "row",
+          justifyContent: "space-between",
+        }}
+      >
+        <StudioBadge label="Folder" tone="accent" />
+        <StudioBadge label={`${childCount} item${childCount === 1 ? "" : "s"}`} />
+      </View>
+      <View
+        style={{
+          flex: 1,
+          justifyContent: "center",
+          paddingHorizontal: 18,
+          paddingTop: 20,
+        }}
+      >
+        <View
+          style={{
+            height: 90,
+            borderRadius: 24,
+            backgroundColor: "rgba(255,250,244,0.72)",
+            borderWidth: 1,
+            borderColor: "rgba(77,55,34,0.12)",
+            justifyContent: "center",
+            paddingHorizontal: 14,
+            shadowColor: "#000",
+            shadowOpacity: 0.08,
+            shadowRadius: 12,
+            shadowOffset: { width: 0, height: 8 },
+          }}
+        >
+          <View
+            style={{
+              position: "absolute",
+              top: -8,
+              left: 16,
+              width: 48,
+              height: 18,
+              borderTopLeftRadius: 12,
+              borderTopRightRadius: 12,
+              borderBottomRightRadius: 8,
+              backgroundColor: "rgba(255,250,244,0.86)",
+              borderWidth: 1,
+              borderColor: "rgba(77,55,34,0.12)",
+              borderBottomWidth: 0,
+            }}
+          />
+          <Text style={{ color: STUDIO.accent, fontWeight: "900", fontSize: 17 }}>
+            {noteCount} note{noteCount === 1 ? "" : "s"}
+          </Text>
+          <Text style={{ color: STUDIO.muted, marginTop: 4, fontSize: 12 }}>
+            {childCount - noteCount} folder{childCount - noteCount === 1 ? "" : "s"} nested inside
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
 function HeaderButton({
   label,
   onPress,
@@ -211,15 +331,17 @@ export default function Explore() {
   const compactHeader = viewportWidth < 760;
   const compactCreateOptions = viewportWidth < 520;
 
-  const [notes, setNotes] = useState<NoteCardData[]>([]);
+  const [items, setItems] = useState<LibraryCardData[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [bannerMessage, setBannerMessage] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>("updated");
   const [editMode, setEditMode] = useState(false);
+  const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
 
   const [createOpen, setCreateOpen] = useState(false);
+  const [createKind, setCreateKind] = useState<"note" | "folder">("note");
   const [createTitle, setCreateTitle] = useState("No name");
   const [createCover, setCreateCover] = useState(DEFAULT_COVER);
   const [createMode, setCreateMode] = useState<"blank" | "pdf" | "infinite">(
@@ -233,18 +355,53 @@ export default function Explore() {
 
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameId, setRenameId] = useState<string | null>(null);
+  const [renameType, setRenameType] = useState<"note" | "folder">("note");
   const [renameValue, setRenameValue] = useState("");
 
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [deleteType, setDeleteType] = useState<"note" | "folder">("note");
+  const [deleteTitle, setDeleteTitle] = useState("item");
+
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [moveId, setMoveId] = useState<string | null>(null);
+  const [moveType, setMoveType] = useState<"note" | "folder">("note");
+  const [moveTitle, setMoveTitle] = useState("item");
+  const [moveParentId, setMoveParentId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setRefreshError(null);
     try {
-      const noteMetas = await listNotes();
+      const libraryItems = await listLibraryItems();
+      const folderStats = new Map<
+        string,
+        {
+          childCount: number;
+          noteCount: number;
+        }
+      >();
+
+      for (const item of libraryItems) {
+        const parentId = item.parentId ?? null;
+        if (!parentId) continue;
+        const current = folderStats.get(parentId) ?? { childCount: 0, noteCount: 0 };
+        current.childCount += 1;
+        if (item.type === "note") current.noteCount += 1;
+        folderStats.set(parentId, current);
+      }
+
       const hydrated = await Promise.all(
-        noteMetas.map(async (meta) => {
+        libraryItems.map(async (meta) => {
+          if (meta.type === "folder") {
+            const stats = folderStats.get(meta.id) ?? { childCount: 0, noteCount: 0 };
+            return {
+              ...meta,
+              childCount: stats.childCount,
+              noteCount: stats.noteCount,
+            } satisfies FolderCardData;
+          }
+
           try {
             const loaded = await loadNote(meta.id);
             const normalized = normalizeDocToPages(loaded?.doc);
@@ -267,10 +424,10 @@ export default function Explore() {
           }
         }),
       );
-      setNotes(hydrated);
+      setItems(hydrated);
     } catch {
       setRefreshError("Could not load your notes right now.");
-      setNotes([]);
+      setItems([]);
     } finally {
       setLoading(false);
     }
@@ -286,21 +443,57 @@ export default function Explore() {
     refresh();
   }, [refresh]);
 
+  const foldersById = useMemo(
+    () =>
+      new Map(
+        items
+          .filter((item): item is FolderCardData => item.type === "folder")
+          .map((item) => [item.id, item]),
+      ),
+    [items],
+  );
+
+  useEffect(() => {
+    if (currentFolderId && !foldersById.has(currentFolderId)) {
+      setCurrentFolderId(null);
+    }
+  }, [currentFolderId, foldersById]);
+
+  const currentFolder = currentFolderId ? foldersById.get(currentFolderId) ?? null : null;
+
+  const breadcrumbs = useMemo(() => {
+    const trail: FolderCardData[] = [];
+    let pointer = currentFolderId ? foldersById.get(currentFolderId) ?? null : null;
+    while (pointer) {
+      trail.unshift(pointer);
+      pointer = pointer.parentId ? foldersById.get(pointer.parentId) ?? null : null;
+    }
+    return trail;
+  }, [currentFolderId, foldersById]);
+
   const grid = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
+    const inFolder = items.filter(
+      (item) => (item.parentId ?? null) === currentFolderId,
+    );
     const filtered = query
-      ? notes.filter((note) =>
-          (note.title || "No name").toLowerCase().includes(query),
+      ? inFolder.filter((item) =>
+          (item.title || (item.type === "folder" ? "New folder" : "No name"))
+            .toLowerCase()
+            .includes(query),
         )
-      : notes;
+      : inFolder;
 
     return [...filtered].sort((a, b) => {
+      if (a.type !== b.type) {
+        return a.type === "folder" ? -1 : 1;
+      }
       if (sortMode === "title") {
         return (a.title || "No name").localeCompare(b.title || "No name");
       }
       return b.updatedAt - a.updatedAt;
     });
-  }, [notes, searchQuery, sortMode]);
+  }, [currentFolderId, items, searchQuery, sortMode]);
 
   const openNote = (id: string) => {
     router.push({
@@ -310,6 +503,7 @@ export default function Explore() {
   };
 
   const openCreateModal = () => {
+    setCreateKind("note");
     setCreateTitle("No name");
     setCreateCover(DEFAULT_COVER);
     setCreateMode("blank");
@@ -323,16 +517,24 @@ export default function Explore() {
 
   const commitCreate = async () => {
     if (createBusy) return;
-    if (createMode === "pdf" && !createPdfDoc) {
+    if (createKind === "note" && createMode === "pdf" && !createPdfDoc) {
       setCreateError("Select a PDF first.");
       return;
     }
 
     setCreateBusy(true);
     setCreateError(null);
-    const title = createTitle.trim() || "No name";
+    const title = createTitle.trim() || (createKind === "folder" ? "New folder" : "No name");
 
     try {
+      if (createKind === "folder") {
+        await createFolder(title, currentFolderId);
+        setBannerMessage("Folder created.");
+        setCreateOpen(false);
+        refresh();
+        return;
+      }
+
       const initialDoc: NoteDoc | undefined =
         createMode === "pdf"
           ? (createPdfDoc ?? undefined)
@@ -357,12 +559,16 @@ export default function Explore() {
                 currentPageIndex: 0,
               };
 
-      const id = await createNote(title, createCover, initialDoc);
+      const id = await createNote(title, createCover, initialDoc, currentFolderId);
       setBannerMessage("Note created.");
       setCreateOpen(false);
       openNote(id);
     } catch {
-      setCreateError("Could not create note. Please try again.");
+      setCreateError(
+        createKind === "folder"
+          ? "Could not create folder. Please try again."
+          : "Could not create note. Please try again.",
+      );
     } finally {
       setCreateBusy(false);
     }
@@ -391,42 +597,58 @@ export default function Explore() {
     }
   };
 
-  const startRename = (note: NoteMeta) => {
-    setRenameId(note.id);
-    setRenameValue(note.title || "No name");
+  const startRename = (item: LibraryItemMeta) => {
+    setRenameId(item.id);
+    setRenameType(item.type);
+    setRenameValue(item.title || (item.type === "folder" ? "New folder" : "No name"));
     setRenameOpen(true);
   };
 
   const commitRename = async () => {
     if (!renameId) return;
-    const title = renameValue.trim() || "No name";
+    const title = renameValue.trim() || (renameType === "folder" ? "New folder" : "No name");
     try {
-      await saveNote(renameId, { title });
-      setBannerMessage("Note renamed.");
+      if (renameType === "folder") {
+        await renameFolder(renameId, title);
+        setBannerMessage("Folder renamed.");
+      } else {
+        await saveNote(renameId, { title });
+        setBannerMessage("Note renamed.");
+      }
       setRenameOpen(false);
       setRenameId(null);
       setRenameValue("");
       refresh();
     } catch {
-      setBannerMessage("Could not rename that note.");
+      setBannerMessage("Could not rename that item.");
     }
   };
 
-  const startDelete = (id: string) => {
-    setDeleteId(id);
+  const startDelete = (item: LibraryItemMeta) => {
+    setDeleteId(item.id);
+    setDeleteType(item.type);
+    setDeleteTitle(item.title || (item.type === "folder" ? "New folder" : "No name"));
     setDeleteOpen(true);
   };
 
   const commitDelete = async () => {
     if (!deleteId) return;
     try {
-      await deleteNote(deleteId);
-      setBannerMessage("Note deleted.");
+      if (deleteType === "folder") {
+        await deleteFolder(deleteId);
+        setBannerMessage("Folder deleted.");
+        if (currentFolderId === deleteId) {
+          setCurrentFolderId(null);
+        }
+      } else {
+        await deleteNote(deleteId);
+        setBannerMessage("Note deleted.");
+      }
       setDeleteOpen(false);
       setDeleteId(null);
       refresh();
     } catch {
-      setBannerMessage("Could not delete that note.");
+      setBannerMessage("Could not delete that item.");
     }
   };
 
@@ -440,6 +662,46 @@ export default function Explore() {
       setBannerMessage("Could not duplicate that note.");
     }
   };
+
+  const startMove = (item: LibraryItemMeta) => {
+    setMoveId(item.id);
+    setMoveType(item.type);
+    setMoveTitle(item.title || (item.type === "folder" ? "New folder" : "No name"));
+    setMoveParentId(item.parentId ?? null);
+    setMoveOpen(true);
+  };
+
+  const commitMove = async () => {
+    if (!moveId) return;
+    try {
+      await moveLibraryItem(moveId, moveParentId);
+      setBannerMessage(`${moveType === "folder" ? "Folder" : "Note"} moved.`);
+      setMoveOpen(false);
+      setMoveId(null);
+      refresh();
+    } catch {
+      setBannerMessage("Could not move that item.");
+    }
+  };
+
+  const moveDestinations = useMemo(() => {
+    const folders = items.filter((item): item is FolderCardData => item.type === "folder");
+    if (!moveId || moveType !== "folder") return folders;
+
+    const excluded = new Set<string>([moveId]);
+    const queue = [moveId];
+    while (queue.length) {
+      const current = queue.shift()!;
+      for (const folder of folders) {
+        if (folder.parentId === current && !excluded.has(folder.id)) {
+          excluded.add(folder.id);
+          queue.push(folder.id);
+        }
+      }
+    }
+
+    return folders.filter((folder) => !excluded.has(folder.id));
+  }, [items, moveId, moveType]);
 
   return (
     <View style={{ flex: 1, backgroundColor: STUDIO.bg }}>
@@ -505,7 +767,9 @@ export default function Explore() {
             a dashboard.
           </Text>
           <Text style={{ color: STUDIO.muted, marginTop: 10 }}>
-            {loading ? "Loading..." : `${notes.length} note(s)`}
+            {loading
+              ? "Loading..."
+              : `${items.filter((item) => item.type === "note").length} note(s), ${items.filter((item) => item.type === "folder").length} folder(s)`}
           </Text>
         </View>
 
@@ -533,11 +797,57 @@ export default function Explore() {
           gap: 12,
         }}
       >
+        <StudioSurface padding={12}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <Pressable
+              onPress={() => setCurrentFolderId(null)}
+              style={{
+                paddingHorizontal: 12,
+                paddingVertical: 8,
+                borderRadius: 999,
+                backgroundColor: currentFolderId === null ? "rgba(35,52,70,0.92)" : "rgba(255,250,244,0.72)",
+                borderWidth: 1,
+                borderColor: currentFolderId === null ? "rgba(255,248,239,0.22)" : STUDIO.line,
+              }}
+            >
+              <Text style={{ color: currentFolderId === null ? "#FFF8EF" : STUDIO.ink, fontWeight: "900", fontSize: 12 }}>
+                All files
+              </Text>
+            </Pressable>
+            {breadcrumbs.map((folder) => {
+              const selected = folder.id === currentFolderId;
+              return (
+                <Pressable
+                  key={folder.id}
+                  onPress={() => setCurrentFolderId(folder.id)}
+                  style={{
+                    paddingHorizontal: 12,
+                    paddingVertical: 8,
+                    borderRadius: 999,
+                    backgroundColor: selected ? "rgba(35,52,70,0.92)" : "rgba(255,250,244,0.72)",
+                    borderWidth: 1,
+                    borderColor: selected ? "rgba(255,248,239,0.22)" : STUDIO.line,
+                  }}
+                >
+                  <Text style={{ color: selected ? "#FFF8EF" : STUDIO.ink, fontWeight: "900", fontSize: 12 }}>
+                    {folder.title || "New folder"}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <Text style={{ color: STUDIO.muted, marginTop: 8, fontSize: 12 }}>
+            {currentFolder
+              ? `Inside ${currentFolder.title || "New folder"}`
+              : "Browsing the root of your library"}
+          </Text>
+        </StudioSurface>
+
         <StudioSurface padding={14}>
           <TextInput
             value={searchQuery}
             onChangeText={setSearchQuery}
-            placeholder="Search notes"
+            placeholder={currentFolder ? "Search this folder" : "Search files and folders"}
             placeholderTextColor="rgba(30,35,41,0.42)"
             style={{
               height: 50,
@@ -620,7 +930,7 @@ export default function Explore() {
           <StudioSurface>
             <View style={{ alignItems: "center", justifyContent: "center", gap: 10, paddingVertical: 20 }}>
             <Text style={{ fontSize: 18, fontWeight: "900", color: "#121826" }}>
-              Loading notes
+              Loading library
             </Text>
               <Text style={{ color: STUDIO.muted, textAlign: "center", maxWidth: 320 }}>
               Pulling your latest library and preview data now.
@@ -639,17 +949,17 @@ export default function Explore() {
             <HeaderButton label="Retry" onPress={refresh} primary />
             </View>
           </StudioSurface>
-        ) : grid.length === 0 && notes.length === 0 ? (
+        ) : grid.length === 0 && items.length === 0 ? (
           <StudioSurface>
             <View style={{ alignItems: "center", justifyContent: "center", gap: 10, paddingVertical: 20 }}>
             <Text style={{ fontSize: 18, fontWeight: "900", color: "#121826" }}>
-              No notes yet
+              Nothing here yet
             </Text>
               <Text style={{ color: STUDIO.muted, textAlign: "center", maxWidth: 320 }}>
-              Create your first note and it will show up here.
+              Create your first note or folder and it will show up here.
             </Text>
               <View style={{ marginTop: 10 }}>
-                <HeaderButton label="Create a note" onPress={openCreateModal} primary />
+                <HeaderButton label="Create something" onPress={openCreateModal} primary />
               </View>
             </View>
           </StudioSurface>
@@ -657,20 +967,20 @@ export default function Explore() {
           <StudioSurface>
             <View style={{ alignItems: "center", justifyContent: "center", gap: 10, paddingVertical: 20 }}>
             <Text style={{ fontSize: 18, fontWeight: "900", color: "#121826" }}>
-              No matching notes
+              No matching items
             </Text>
               <Text style={{ color: STUDIO.muted, textAlign: "center", maxWidth: 320 }}>
-              Try a different search or switch the sort to find what you need faster.
-            </Text>
+              Try a different search or switch folders to find what you need faster.
+              </Text>
             </View>
           </StudioSurface>
         ) : (
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 18 }}>
-            {grid.map((note) => {
-              const cover = note.coverColor || DEFAULT_COVER;
+            {grid.map((item) => {
+              const cover = item.type === "note" ? item.coverColor || DEFAULT_COVER : "#D7B189";
               return (
                 <View
-                  key={note.id}
+                  key={item.id}
                   style={{
                     width: 190,
                     borderRadius: 28,
@@ -689,16 +999,28 @@ export default function Explore() {
                   <Pressable
                     onPress={() => {
                       if (editMode) return;
-                      openNote(note.id);
+                      if (item.type === "folder") {
+                        setCurrentFolderId(item.id);
+                        return;
+                      }
+                      openNote(item.id);
                     }}
                     style={{ backgroundColor: "transparent" }}
                   >
-                    <NotePreview
-                      coverColor={cover}
-                      strokes={note.previewStrokes}
-                      kind={note.kind}
-                      pageCount={note.pageCount}
-                    />
+                    {item.type === "folder" ? (
+                      <FolderPreview
+                        coverColor={cover}
+                        childCount={item.childCount}
+                        noteCount={item.noteCount}
+                      />
+                    ) : (
+                      <NotePreview
+                        coverColor={cover}
+                        strokes={item.previewStrokes}
+                        kind={item.kind}
+                        pageCount={item.pageCount}
+                      />
+                    )}
 
                     <View style={{ marginTop: 10 }}>
                       <Text
@@ -710,7 +1032,7 @@ export default function Explore() {
                           fontFamily: DISPLAY_FONT,
                         }}
                       >
-                        {note.title || "No name"}
+                        {item.title || (item.type === "folder" ? "New folder" : "No name")}
                       </Text>
                       <Text
                         style={{
@@ -719,7 +1041,7 @@ export default function Explore() {
                           fontSize: 12,
                         }}
                       >
-                        {fmtDate(note.updatedAt)}
+                        {fmtDate(item.updatedAt)}
                       </Text>
                       <Text
                         style={{
@@ -731,9 +1053,11 @@ export default function Explore() {
                           textTransform: "uppercase",
                         }}
                       >
-                        {note.kind === "infinite"
-                          ? "Infinite board"
-                          : `${note.pageCount} page${note.pageCount === 1 ? "" : "s"}`}
+                        {item.type === "folder"
+                          ? `${item.childCount} item${item.childCount === 1 ? "" : "s"} inside`
+                          : item.kind === "infinite"
+                            ? "Infinite board"
+                            : `${item.pageCount} page${item.pageCount === 1 ? "" : "s"}`}
                       </Text>
                     </View>
                   </Pressable>
@@ -741,17 +1065,23 @@ export default function Explore() {
                   {editMode ? (
                     <View style={{ marginTop: 10, gap: 8 }}>
                       <SmallActionButton
-                        label="Duplicate"
-                        onPress={() => handleDuplicate(note.id)}
+                        label="Rename"
+                        onPress={() => startRename(item)}
                       />
                       <SmallActionButton
-                        label="Rename"
-                        onPress={() => startRename(note)}
+                        label="Move"
+                        onPress={() => startMove(item)}
                       />
+                      {item.type === "note" ? (
+                        <SmallActionButton
+                          label="Duplicate"
+                          onPress={() => handleDuplicate(item.id)}
+                        />
+                      ) : null}
                       <SmallActionButton
                         label="Delete"
                         danger
-                        onPress={() => startDelete(note.id)}
+                        onPress={() => startDelete(item)}
                       />
                     </View>
                   ) : null}
@@ -767,16 +1097,29 @@ export default function Explore() {
           onPress={() => setCreateOpen(false)}
           style={{
             flex: 1,
-            backgroundColor: "rgba(32,23,16,0.42)",
+            backgroundColor: "rgba(26,18,12,0.54)",
             justifyContent: "center",
             padding: 20,
           }}
         >
           <Pressable onPress={() => {}}>
             <StudioModalCard width={380}>
-            <Text style={{ fontSize: 13, color: STUDIO.accentWarm, fontWeight: "900", letterSpacing: 1.1, textTransform: "uppercase" }}>New note</Text>
-            <StudioTitle size={28}>Create a fresh workspace.</StudioTitle>
-            <TextInput value={createTitle} onChangeText={setCreateTitle} placeholder="Note name" placeholderTextColor="rgba(30,35,41,0.46)" style={{ height: 48, borderRadius: 16, paddingHorizontal: 14, backgroundColor: "rgba(255,251,246,0.86)", borderWidth: 1, borderColor: STUDIO.line, color: STUDIO.ink, fontWeight: "700" }} autoFocus />
+            <StudioModalHeader
+              eyebrow={createKind === "folder" ? "New folder" : "New note"}
+              title={createKind === "folder" ? "Create a place to organize work." : "Create a fresh workspace."}
+              description={
+                createKind === "folder"
+                  ? "Folders can hold notes and other folders inside the current location."
+                  : "Start with a clean canvas, an infinite board, or import a PDF to mark up."
+              }
+            />
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              <Pressable onPress={() => setCreateKind("note")} style={{ flex: 1, paddingVertical: 12, borderRadius: 16, borderWidth: 1, borderColor: createKind === "note" ? "rgba(35,52,70,0.30)" : "rgba(77,55,34,0.14)", backgroundColor: createKind === "note" ? "rgba(35,52,70,0.12)" : "rgba(255,250,244,0.68)", alignItems: "center" }}><Text style={{ color: createKind === "note" ? STUDIO.accent : STUDIO.ink, fontWeight: "900" }}>Note</Text></Pressable>
+              <Pressable onPress={() => setCreateKind("folder")} style={{ flex: 1, paddingVertical: 12, borderRadius: 16, borderWidth: 1, borderColor: createKind === "folder" ? "rgba(35,52,70,0.30)" : "rgba(77,55,34,0.14)", backgroundColor: createKind === "folder" ? "rgba(35,52,70,0.12)" : "rgba(255,250,244,0.68)", alignItems: "center" }}><Text style={{ color: createKind === "folder" ? STUDIO.accent : STUDIO.ink, fontWeight: "900" }}>Folder</Text></Pressable>
+            </View>
+            <TextInput value={createTitle} onChangeText={setCreateTitle} placeholder={createKind === "folder" ? "Folder name" : "Note name"} placeholderTextColor="rgba(30,35,41,0.46)" style={{ height: 50, borderRadius: 18, paddingHorizontal: 14, backgroundColor: "rgba(255,255,255,0.56)", borderWidth: 1, borderColor: "rgba(77,55,34,0.14)", color: STUDIO.ink, fontWeight: "700" }} autoFocus />
+            {createKind === "note" ? (
+              <>
             <Text style={{ color: STUDIO.muted, fontWeight: "800", marginTop: 4 }}>Note type</Text>
             <View
               style={{
@@ -785,14 +1128,14 @@ export default function Explore() {
                 flexWrap: "wrap",
               }}
             >
-              <Pressable onPress={() => setCreateMode("blank")} style={{ flexGrow: 1, flexBasis: compactCreateOptions ? "100%" : 100, paddingVertical: 12, borderRadius: 16, borderWidth: 1, borderColor: createMode === "blank" ? STUDIO.lineStrong : STUDIO.line, backgroundColor: createMode === "blank" ? "rgba(35,52,70,0.08)" : "rgba(255,249,241,0.58)", alignItems: "center" }}><Text style={{ color: STUDIO.ink, fontWeight: "900" }}>Simple canvas</Text></Pressable>
-              <Pressable onPress={() => setCreateMode("infinite")} style={{ flexGrow: 1, flexBasis: compactCreateOptions ? "100%" : 100, paddingVertical: 12, borderRadius: 16, borderWidth: 1, borderColor: createMode === "infinite" ? STUDIO.lineStrong : STUDIO.line, backgroundColor: createMode === "infinite" ? "rgba(35,52,70,0.08)" : "rgba(255,249,241,0.58)", alignItems: "center" }}><Text style={{ color: STUDIO.ink, fontWeight: "900" }}>Infinite canvas</Text></Pressable>
-              <Pressable onPress={() => setCreateMode("pdf")} style={{ flexGrow: 1, flexBasis: compactCreateOptions ? "100%" : 100, paddingVertical: 12, borderRadius: 16, borderWidth: 1, borderColor: createMode === "pdf" ? STUDIO.lineStrong : STUDIO.line, backgroundColor: createMode === "pdf" ? "rgba(35,52,70,0.08)" : "rgba(255,249,241,0.58)", alignItems: "center" }}><Text style={{ color: STUDIO.ink, fontWeight: "900" }}>Import PDF</Text></Pressable>
+              <Pressable onPress={() => setCreateMode("blank")} style={{ flexGrow: 1, flexBasis: compactCreateOptions ? "100%" : 100, paddingVertical: 14, borderRadius: 18, borderWidth: 1, borderColor: createMode === "blank" ? "rgba(35,52,70,0.30)" : "rgba(77,55,34,0.14)", backgroundColor: createMode === "blank" ? "rgba(35,52,70,0.12)" : "rgba(255,250,244,0.68)", alignItems: "center" }}><Text style={{ color: createMode === "blank" ? STUDIO.accent : STUDIO.ink, fontWeight: "900" }}>Simple canvas</Text></Pressable>
+              <Pressable onPress={() => setCreateMode("infinite")} style={{ flexGrow: 1, flexBasis: compactCreateOptions ? "100%" : 100, paddingVertical: 14, borderRadius: 18, borderWidth: 1, borderColor: createMode === "infinite" ? "rgba(35,52,70,0.30)" : "rgba(77,55,34,0.14)", backgroundColor: createMode === "infinite" ? "rgba(35,52,70,0.12)" : "rgba(255,250,244,0.68)", alignItems: "center" }}><Text style={{ color: createMode === "infinite" ? STUDIO.accent : STUDIO.ink, fontWeight: "900" }}>Infinite canvas</Text></Pressable>
+              <Pressable onPress={() => setCreateMode("pdf")} style={{ flexGrow: 1, flexBasis: compactCreateOptions ? "100%" : 100, paddingVertical: 14, borderRadius: 18, borderWidth: 1, borderColor: createMode === "pdf" ? "rgba(35,52,70,0.30)" : "rgba(77,55,34,0.14)", backgroundColor: createMode === "pdf" ? "rgba(35,52,70,0.12)" : "rgba(255,250,244,0.68)", alignItems: "center" }}><Text style={{ color: createMode === "pdf" ? STUDIO.accent : STUDIO.ink, fontWeight: "900" }}>Import PDF</Text></Pressable>
             </View>
             {createMode === "pdf" ? (
               <View style={{ gap: 8 }}>
-                <Pressable onPress={importPdf} style={{ paddingVertical: 10, borderRadius: 12, borderWidth: 1, borderColor: "rgba(20,26,34,0.14)", backgroundColor: "rgba(20,26,34,0.06)", alignItems: "center", opacity: createBusy ? 0.65 : 1 }}>
-                  <Text style={{ color: STUDIO.ink, fontWeight: "900" }}>{createBusy ? "Importing..." : "Choose PDF"}</Text>
+                <Pressable onPress={importPdf} style={{ paddingVertical: 12, borderRadius: 14, borderWidth: 1, borderColor: "rgba(35,52,70,0.16)", backgroundColor: "rgba(35,52,70,0.08)", alignItems: "center", opacity: createBusy ? 0.65 : 1 }}>
+                  <Text style={{ color: STUDIO.accent, fontWeight: "900" }}>{createBusy ? "Importing..." : "Choose PDF"}</Text>
                 </Pressable>
                 <Text style={{ color: STUDIO.muted, fontSize: 12 }}>{createPdfName ? `${createPdfName} (${createPdfPageCount} page(s) ready)` : "No PDF selected"}</Text>
               </View>
@@ -806,13 +1149,19 @@ export default function Explore() {
               {COVER_SWATCHES.map((color) => {
                 const selected = color.toLowerCase() === createCover.toLowerCase();
                 const border = color.toLowerCase() === "#ffffff" ? "rgba(0,0,0,0.25)" : "rgba(255,255,255,0.18)";
-                return <Pressable key={color} onPress={() => setCreateCover(color)} style={{ width: 28, height: 28, borderRadius: 999, backgroundColor: color, borderWidth: selected ? 3 : 1, borderColor: selected ? "#fff" : border }} />;
+                return <Pressable key={color} onPress={() => setCreateCover(color)} style={{ width: 30, height: 30, borderRadius: 999, backgroundColor: color, borderWidth: selected ? 3 : 1, borderColor: selected ? STUDIO.accent : border, shadowColor: selected ? STUDIO.accent : "#000", shadowOpacity: selected ? 0.16 : 0.04, shadowRadius: 10, shadowOffset: { width: 0, height: 4 } }} />;
               })}
             </View>
+              </>
+            ) : (
+              <Text style={{ color: STUDIO.muted, fontSize: 12 }}>
+                This folder will be created {currentFolder ? `inside ${currentFolder.title || "the current folder"}` : "at the root of your library"}.
+              </Text>
+            )}
             {createError ? <Text style={{ color: "#b42318", fontWeight: "700", fontSize: 12 }}>{createError}</Text> : null}
             <View style={{ flexDirection: "row", gap: 10, marginTop: 6 }}>
               <View style={{ flex: 1 }}><StudioButton label="Cancel" onPress={() => setCreateOpen(false)} /></View>
-              <View style={{ flex: 1 }}><StudioButton label="Create" onPress={commitCreate} tone="primary" disabled={createBusy || (createMode === "pdf" && !createPdfDoc)} /></View>
+              <View style={{ flex: 1 }}><StudioButton label={createKind === "folder" ? "Create folder" : "Create"} onPress={commitCreate} tone="primary" disabled={createBusy || (createKind === "note" && createMode === "pdf" && !createPdfDoc)} /></View>
             </View>
             </StudioModalCard>
           </Pressable>
@@ -820,12 +1169,15 @@ export default function Explore() {
       </Modal>
 
       <Modal visible={renameOpen} transparent animationType="fade" onRequestClose={() => setRenameOpen(false)}>
-        <Pressable onPress={() => setRenameOpen(false)} style={{ flex: 1, backgroundColor: "rgba(32,23,16,0.42)", justifyContent: "center", padding: 20 }}>
+        <Pressable onPress={() => setRenameOpen(false)} style={{ flex: 1, backgroundColor: "rgba(26,18,12,0.54)", justifyContent: "center", padding: 20 }}>
           <Pressable onPress={() => {}}>
             <StudioModalCard width={360}>
-            <Text style={{ fontSize: 13, color: STUDIO.accentWarm, fontWeight: "900", letterSpacing: 1.1, textTransform: "uppercase" }}>Refine title</Text>
-            <StudioTitle size={26}>Rename note.</StudioTitle>
-            <TextInput value={renameValue} onChangeText={setRenameValue} placeholder="Note name" placeholderTextColor="rgba(30,35,41,0.46)" style={{ height: 48, borderRadius: 16, paddingHorizontal: 14, backgroundColor: "rgba(255,251,246,0.86)", borderWidth: 1, borderColor: STUDIO.line, color: STUDIO.ink, fontWeight: "700" }} autoFocus />
+            <StudioModalHeader
+              eyebrow="Refine title"
+              title={renameType === "folder" ? "Rename folder." : "Rename note."}
+              description={renameType === "folder" ? "Give this folder a clearer label so it is easier to scan in the library." : "Give this workspace a clearer name so it is easier to spot later."}
+            />
+            <TextInput value={renameValue} onChangeText={setRenameValue} placeholder={renameType === "folder" ? "Folder name" : "Note name"} placeholderTextColor="rgba(30,35,41,0.46)" style={{ height: 50, borderRadius: 18, paddingHorizontal: 14, backgroundColor: "rgba(255,255,255,0.56)", borderWidth: 1, borderColor: "rgba(77,55,34,0.14)", color: STUDIO.ink, fontWeight: "700" }} autoFocus />
             <View style={{ flexDirection: "row", gap: 10 }}>
               <View style={{ flex: 1 }}><StudioButton label="Cancel" onPress={() => setRenameOpen(false)} /></View>
               <View style={{ flex: 1 }}><StudioButton label="Save" onPress={commitRename} tone="primary" /></View>
@@ -836,16 +1188,75 @@ export default function Explore() {
       </Modal>
 
       <Modal visible={deleteOpen} transparent animationType="fade" onRequestClose={() => setDeleteOpen(false)}>
-        <Pressable onPress={() => setDeleteOpen(false)} style={{ flex: 1, backgroundColor: "rgba(32,23,16,0.42)", justifyContent: "center", padding: 20 }}>
+        <Pressable onPress={() => setDeleteOpen(false)} style={{ flex: 1, backgroundColor: "rgba(26,18,12,0.54)", justifyContent: "center", padding: 20 }}>
           <Pressable onPress={() => {}}>
             <StudioModalCard width={360}>
-            <Text style={{ fontSize: 13, color: STUDIO.danger, fontWeight: "900", letterSpacing: 1.1, textTransform: "uppercase" }}>Permanent action</Text>
-            <StudioTitle size={26}>Delete note?</StudioTitle>
-            <Text style={{ color: STUDIO.muted }}>This cannot be undone.</Text>
+            <StudioModalHeader
+              eyebrow="Permanent action"
+              title={deleteType === "folder" ? "Delete folder?" : "Delete note?"}
+              description={deleteType === "folder" ? `Delete ${deleteTitle} and everything inside it.` : `Delete ${deleteTitle} permanently.`}
+            />
+            <View style={{ borderRadius: 18, padding: 14, borderWidth: 1, borderColor: "rgba(156,67,52,0.18)", backgroundColor: "rgba(156,67,52,0.08)" }}>
+              <Text style={{ color: STUDIO.danger, fontWeight: "800", fontSize: 12 }}>{deleteType === "folder" ? "This also deletes every note and subfolder inside it." : "This cannot be undone."}</Text>
+            </View>
             <View style={{ flexDirection: "row", gap: 10 }}>
               <View style={{ flex: 1 }}><StudioButton label="Cancel" onPress={() => setDeleteOpen(false)} /></View>
               <View style={{ flex: 1 }}><StudioButton label="Delete" onPress={commitDelete} tone="danger" /></View>
             </View>
+            </StudioModalCard>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal visible={moveOpen} transparent animationType="fade" onRequestClose={() => setMoveOpen(false)}>
+        <Pressable onPress={() => setMoveOpen(false)} style={{ flex: 1, backgroundColor: "rgba(26,18,12,0.54)", justifyContent: "center", padding: 20 }}>
+          <Pressable onPress={() => {}}>
+            <StudioModalCard width={400}>
+              <StudioModalHeader
+                eyebrow="Move item"
+                title={`Move ${moveTitle}`}
+                description="Choose the destination folder. Root keeps the item at the top level."
+              />
+              <ScrollView style={{ maxHeight: 280 }} contentContainerStyle={{ gap: 10 }}>
+                <Pressable
+                  onPress={() => setMoveParentId(null)}
+                  style={{
+                    paddingHorizontal: 14,
+                    paddingVertical: 12,
+                    borderRadius: 18,
+                    borderWidth: 1,
+                    borderColor: moveParentId === null ? "rgba(35,52,70,0.30)" : "rgba(77,55,34,0.14)",
+                    backgroundColor: moveParentId === null ? "rgba(35,52,70,0.12)" : "rgba(255,250,244,0.68)",
+                  }}
+                >
+                  <Text style={{ color: moveParentId === null ? STUDIO.accent : STUDIO.ink, fontWeight: "900" }}>Root</Text>
+                </Pressable>
+                {moveDestinations.map((folder) => (
+                  <Pressable
+                    key={folder.id}
+                    onPress={() => setMoveParentId(folder.id)}
+                    style={{
+                      paddingHorizontal: 14,
+                      paddingVertical: 12,
+                      borderRadius: 18,
+                      borderWidth: 1,
+                      borderColor: moveParentId === folder.id ? "rgba(35,52,70,0.30)" : "rgba(77,55,34,0.14)",
+                      backgroundColor: moveParentId === folder.id ? "rgba(35,52,70,0.12)" : "rgba(255,250,244,0.68)",
+                    }}
+                  >
+                    <Text style={{ color: moveParentId === folder.id ? STUDIO.accent : STUDIO.ink, fontWeight: "900" }}>
+                      {folder.title || "New folder"}
+                    </Text>
+                    <Text style={{ color: STUDIO.muted, fontSize: 12, marginTop: 4 }}>
+                      {folder.childCount} item{folder.childCount === 1 ? "" : "s"}
+                    </Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+              <View style={{ flexDirection: "row", gap: 10 }}>
+                <View style={{ flex: 1 }}><StudioButton label="Cancel" onPress={() => setMoveOpen(false)} /></View>
+                <View style={{ flex: 1 }}><StudioButton label="Move" onPress={commitMove} tone="primary" /></View>
+              </View>
             </StudioModalCard>
           </Pressable>
         </Pressable>

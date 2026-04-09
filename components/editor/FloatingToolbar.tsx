@@ -228,7 +228,7 @@ export function FloatingToolbar({
           onPress={() => setIsOverflowOpen(false)}
           style={{
             flex: 1,
-            backgroundColor: "rgba(32,23,16,0.32)",
+            backgroundColor: "rgba(26,18,12,0.42)",
             justifyContent: "flex-start",
             alignItems: "flex-start",
             paddingLeft: toolbarPos.x,
@@ -239,26 +239,38 @@ export function FloatingToolbar({
             onPress={() => {}}
             style={{
               minWidth: 220,
-              padding: 14,
-              borderRadius: 18,
+              padding: 16,
+              borderRadius: 24,
               borderWidth: 1,
-              borderColor: TOPBAR_BORDER,
-              backgroundColor: "rgba(255,249,241,0.97)",
+              borderColor: "rgba(77,55,34,0.14)",
+              backgroundColor: "rgba(255,250,243,0.97)",
               shadowColor: "#000",
-              shadowOpacity: 0.12,
-              shadowRadius: 20,
-              shadowOffset: { width: 0, height: 10 },
-              boxShadow: "0 18px 34px rgba(56,42,26,0.18)",
+              shadowOpacity: 0.16,
+              shadowRadius: 26,
+              shadowOffset: { width: 0, height: 14 },
+              boxShadow: "0 24px 46px rgba(56,42,26,0.22)",
             }}
           >
+            <View
+              pointerEvents="none"
+              style={{
+                position: "absolute",
+                top: -40,
+                right: -20,
+                width: 120,
+                height: 120,
+                borderRadius: 999,
+                backgroundColor: "rgba(154,92,55,0.12)",
+              }}
+            />
             <Text
               style={{
                 color: STUDIO.accentWarm,
                 fontWeight: "900",
                 fontSize: 11,
-                letterSpacing: 0.8,
+                letterSpacing: 1.1,
                 textTransform: "uppercase",
-                marginBottom: 10,
+                marginBottom: 12,
               }}
             >
               More tools
@@ -270,16 +282,16 @@ export function FloatingToolbar({
                 onPagesPress();
               }}
               style={{
-                paddingVertical: 10,
+                paddingVertical: 12,
                 paddingHorizontal: 12,
-                borderRadius: 14,
-                backgroundColor: "rgba(255,249,241,0.64)",
+                borderRadius: 16,
+                backgroundColor: "rgba(35,52,70,0.10)",
                 borderWidth: 1,
-                borderColor: BTN_BORDER,
-                marginBottom: 8,
+                borderColor: "rgba(35,52,70,0.16)",
+                marginBottom: 10,
               }}
             >
-              <Text style={{ color: iconOff, fontWeight: "900", fontSize: 12 }}>
+              <Text style={{ color: STUDIO.accent, fontWeight: "900", fontSize: 12 }}>
                 {navLabel}
               </Text>
               <Text
@@ -293,7 +305,7 @@ export function FloatingToolbar({
               </Text>
             </Pressable>
 
-            <View style={{ flexDirection: "row", gap: 8, marginBottom: 8 }}>
+            <View style={{ flexDirection: "row", gap: 8, marginBottom: 10 }}>
               <Pressable
                 onPress={() => {
                   setIsOverflowOpen(false);
@@ -301,13 +313,13 @@ export function FloatingToolbar({
                 }}
                 style={{
                   flex: 1,
-                  height: 36,
-                  borderRadius: 12,
+                  height: 40,
+                  borderRadius: 14,
                   alignItems: "center",
                   justifyContent: "center",
-                  backgroundColor: BTN_BG,
+                  backgroundColor: "rgba(255,255,255,0.42)",
                   borderWidth: 1,
-                  borderColor: BTN_BORDER,
+                  borderColor: "rgba(77,55,34,0.12)",
                 }}
               >
                 <Text style={{ color: iconOff, fontWeight: "900", fontSize: 11 }}>
@@ -322,13 +334,13 @@ export function FloatingToolbar({
                 }}
                 style={{
                   flex: 1,
-                  height: 36,
-                  borderRadius: 12,
+                  height: 40,
+                  borderRadius: 14,
                   alignItems: "center",
                   justifyContent: "center",
-                  backgroundColor: BTN_BG,
+                  backgroundColor: "rgba(255,255,255,0.42)",
                   borderWidth: 1,
-                  borderColor: BTN_BORDER,
+                  borderColor: "rgba(77,55,34,0.12)",
                 }}
               >
                 <Text style={{ color: iconOff, fontWeight: "900", fontSize: 11 }}>
@@ -337,18 +349,18 @@ export function FloatingToolbar({
               </Pressable>
             </View>
 
-            <View style={{ flexDirection: "row", gap: 8, marginBottom: 8 }}>
+            <View style={{ flexDirection: "row", gap: 8, marginBottom: 10 }}>
               <Pressable
                 onPress={onZoomOut}
                 style={{
                   width: 36,
-                  height: 36,
-                  borderRadius: 12,
+                  height: 40,
+                  borderRadius: 14,
                   alignItems: "center",
                   justifyContent: "center",
-                  backgroundColor: BTN_BG,
+                  backgroundColor: "rgba(255,255,255,0.42)",
                   borderWidth: 1,
-                  borderColor: BTN_BORDER,
+                  borderColor: "rgba(77,55,34,0.12)",
                 }}
               >
                 <Text style={{ color: iconOff, fontWeight: "900", fontSize: 16 }}>
@@ -360,13 +372,13 @@ export function FloatingToolbar({
                 onPress={onZoomReset}
                 style={{
                   flex: 1,
-                  height: 36,
-                  borderRadius: 12,
+                  height: 40,
+                  borderRadius: 14,
                   alignItems: "center",
                   justifyContent: "center",
-                  backgroundColor: BTN_BG,
+                  backgroundColor: "rgba(35,52,70,0.10)",
                   borderWidth: 1,
-                  borderColor: BTN_BORDER,
+                  borderColor: "rgba(35,52,70,0.16)",
                 }}
               >
                 <Text style={{ color: iconOff, fontWeight: "900", fontSize: 12 }}>
@@ -378,13 +390,13 @@ export function FloatingToolbar({
                 onPress={onZoomIn}
                 style={{
                   width: 36,
-                  height: 36,
-                  borderRadius: 12,
+                  height: 40,
+                  borderRadius: 14,
                   alignItems: "center",
                   justifyContent: "center",
-                  backgroundColor: BTN_BG,
+                  backgroundColor: "rgba(255,255,255,0.42)",
                   borderWidth: 1,
-                  borderColor: BTN_BORDER,
+                  borderColor: "rgba(77,55,34,0.12)",
                 }}
               >
                 <Text style={{ color: iconOff, fontWeight: "900", fontSize: 16 }}>
@@ -401,13 +413,13 @@ export function FloatingToolbar({
                 disabled={historyIndex <= 0}
                 style={{
                   flex: 1,
-                  height: 36,
-                  borderRadius: 12,
+                  height: 40,
+                  borderRadius: 14,
                   alignItems: "center",
                   justifyContent: "center",
-                  backgroundColor: BTN_BG,
+                  backgroundColor: "rgba(255,255,255,0.42)",
                   borderWidth: 1,
-                  borderColor: BTN_BORDER,
+                  borderColor: "rgba(77,55,34,0.12)",
                   opacity: historyIndex > 0 ? 1 : 0.45,
                 }}
               >
@@ -426,13 +438,13 @@ export function FloatingToolbar({
                 disabled={historyIndex >= historyLength - 1}
                 style={{
                   flex: 1,
-                  height: 36,
-                  borderRadius: 12,
+                  height: 40,
+                  borderRadius: 14,
                   alignItems: "center",
                   justifyContent: "center",
-                  backgroundColor: BTN_BG,
+                  backgroundColor: "rgba(255,255,255,0.42)",
                   borderWidth: 1,
-                  borderColor: BTN_BORDER,
+                  borderColor: "rgba(77,55,34,0.12)",
                   opacity: historyIndex < historyLength - 1 ? 1 : 0.45,
                 }}
               >

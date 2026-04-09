@@ -177,10 +177,6 @@ export default function EditorScreen() {
   const [sizeModalTool, setSizeModalTool] = useState<
     "pen" | "highlighter" | "eraser"
   >("pen");
-  const lastPenTapMs = useRef(0);
-  const lastHighlighterTapMs = useRef(0);
-  const lastEraserTapMs = useRef(0);
-
   // Pen color
   const [hue, setHue] = useState(0);
   const [penColor, setPenColor] = useState<string>("#111111");
@@ -1096,49 +1092,43 @@ export default function EditorScreen() {
         }}
         toolbarHandleGesture={toolbarHandleGesture}
         onPenPress={() => {
-          const now = Date.now();
-          if (now - lastPenTapMs.current < 280) {
-            setTool("pen");
+          if (tool === "pen") {
             setSizeModalTool("pen");
             setIsSizeModalOpen(true);
           } else {
             setTool("pen");
             clearPenModeArtifacts();
           }
-          lastPenTapMs.current = now;
         }}
         onHighlighterPress={() => {
-          const now = Date.now();
-          if (now - lastHighlighterTapMs.current < 280) {
-            setTool("highlighter");
+          if (tool === "highlighter") {
             setSizeModalTool("highlighter");
             setIsSizeModalOpen(true);
           } else {
             setTool("highlighter");
             clearPenModeArtifacts();
           }
-          lastHighlighterTapMs.current = now;
         }}
         onShapePress={() => {
-          setTool("shape");
-          clearPenModeArtifacts();
-          setIsShapeModalOpen(true);
+          if (tool === "shape") {
+            setIsShapeModalOpen(true);
+          } else {
+            setTool("shape");
+            clearPenModeArtifacts();
+          }
         }}
         onTextPress={() => {
           setTool("text");
           clearPenModeArtifacts();
         }}
         onEraserPress={() => {
-          const now = Date.now();
-          if (now - lastEraserTapMs.current < 280) {
-            setTool("eraser");
+          if (tool === "eraser") {
             setSizeModalTool("eraser");
             setIsSizeModalOpen(true);
           } else {
             setTool("eraser");
             clearEraserModeArtifacts();
           }
-          lastEraserTapMs.current = now;
         }}
         onLassoPress={() => {
           setTool("lasso");

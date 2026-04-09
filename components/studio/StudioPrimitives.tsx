@@ -171,22 +171,111 @@ export function StudioModalCard({
         width: resolvedWidth,
         maxWidth: "100%",
         maxHeight: Math.max(260, viewportHeight - 48),
-        backgroundColor: STUDIO.panelStrong,
-        borderRadius: 26,
-        padding: 16,
+        backgroundColor: "rgba(255,250,243,0.94)",
+        borderRadius: 30,
+        padding: 18,
         gap: 14,
         overflow: "hidden",
         borderWidth: 1,
-        borderColor: STUDIO.line,
+        borderColor: "rgba(77,55,34,0.14)",
         shadowColor: "#000",
-        shadowOpacity: 0.12,
-        shadowRadius: 24,
-        shadowOffset: { width: 0, height: 12 },
-        boxShadow: "0 24px 48px rgba(34,25,17,0.18)",
-        backdropFilter: "blur(16px)",
+        shadowOpacity: 0.18,
+        shadowRadius: 30,
+        shadowOffset: { width: 0, height: 16 },
+        boxShadow: "0 28px 64px rgba(34,25,17,0.22)",
+        backdropFilter: "blur(18px)",
       }}
     >
+      <View
+        pointerEvents="none"
+        style={{
+          position: "absolute",
+          top: -46,
+          right: -28,
+          width: 160,
+          height: 160,
+          borderRadius: 999,
+          backgroundColor: "rgba(154,92,55,0.12)",
+        }}
+      />
+      <View
+        pointerEvents="none"
+        style={{
+          position: "absolute",
+          bottom: -70,
+          left: -26,
+          width: 180,
+          height: 180,
+          borderRadius: 999,
+          backgroundColor: "rgba(35,52,70,0.08)",
+        }}
+      />
+      <View
+        pointerEvents="none"
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          right: 0,
+          height: 5,
+          backgroundColor: "rgba(154,92,55,0.82)",
+        }}
+      />
+      <View
+        pointerEvents="none"
+        style={{
+          position: "absolute",
+          inset: 8,
+          borderRadius: 24,
+          borderWidth: 1,
+          borderColor: "rgba(255,255,255,0.42)",
+        }}
+      />
       {children}
+    </View>
+  );
+}
+
+export function StudioModalHeader({
+  eyebrow,
+  title,
+  description,
+  action,
+}: {
+  eyebrow: React.ReactNode;
+  title: React.ReactNode;
+  description?: React.ReactNode;
+  action?: React.ReactNode;
+}) {
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "flex-start",
+        justifyContent: "space-between",
+        gap: 14,
+      }}
+    >
+      <View style={{ flex: 1, gap: 4 }}>
+        <Text
+          style={{
+            color: STUDIO.accentWarm,
+            fontSize: 11,
+            fontWeight: "900",
+            letterSpacing: 1.3,
+            textTransform: "uppercase",
+          }}
+        >
+          {eyebrow}
+        </Text>
+        <StudioTitle size={26}>{title}</StudioTitle>
+        {description ? (
+          <Text style={{ color: STUDIO.muted, fontSize: 12, lineHeight: 18 }}>
+            {description}
+          </Text>
+        ) : null}
+      </View>
+      {action}
     </View>
   );
 }

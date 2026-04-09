@@ -5,7 +5,7 @@ import {
   STUDIO,
   StudioButton,
   StudioModalCard,
-  StudioTitle,
+  StudioModalHeader,
 } from "@/components/studio/StudioPrimitives";
 import type { ShapePreset } from "@/lib/noteDocument";
 
@@ -47,28 +47,18 @@ export function ShapeModal({
         onPress={onClose}
         style={{
           flex: 1,
-          backgroundColor: "rgba(32,23,16,0.42)",
+          backgroundColor: "rgba(26,18,12,0.54)",
           justifyContent: "center",
           padding: 20,
         }}
       >
         <Pressable onPress={() => {}}>
           <StudioModalCard width={420}>
-            <Text
-              style={{
-                fontSize: 12,
-                color: STUDIO.accentWarm,
-                fontWeight: "900",
-                letterSpacing: 1.1,
-                textTransform: "uppercase",
-              }}
-            >
-              Drafting tools
-            </Text>
-            <StudioTitle size={26}>Choose a shape</StudioTitle>
-            <Text style={{ color: STUDIO.muted, fontSize: 12 }}>
-              Pick the shape family, then drag on the canvas to place it.
-            </Text>
+            <StudioModalHeader
+              eyebrow="Drafting tools"
+              title="Choose a shape"
+              description="Pick a shape family, then drag on the canvas to place it."
+            />
 
             <ScrollView
               showsVerticalScrollIndicator={false}
@@ -85,16 +75,25 @@ export function ShapeModal({
                     }}
                     style={{
                       paddingHorizontal: 14,
-                      paddingVertical: 12,
-                      borderRadius: 18,
+                      paddingVertical: 14,
+                      borderRadius: 20,
                       borderWidth: 1,
-                      borderColor: selected ? STUDIO.lineStrong : STUDIO.line,
+                      borderColor: selected
+                        ? "rgba(35,52,70,0.34)"
+                        : "rgba(77,55,34,0.14)",
                       backgroundColor: selected
-                        ? "rgba(35,52,70,0.08)"
-                        : "rgba(255,249,241,0.56)",
+                        ? "rgba(35,52,70,0.14)"
+                        : "rgba(255,250,244,0.72)",
+                      shadowColor: selected ? STUDIO.accent : "#000",
+                      shadowOpacity: selected ? 0.14 : 0.04,
+                      shadowRadius: selected ? 16 : 10,
+                      shadowOffset: { width: 0, height: 8 },
+                      boxShadow: selected
+                        ? "0 14px 28px rgba(35,52,70,0.18)"
+                        : "0 8px 18px rgba(56,42,26,0.06)",
                     }}
                   >
-                    <Text style={{ color: STUDIO.ink, fontWeight: "900" }}>
+                    <Text style={{ color: selected ? STUDIO.accent : STUDIO.ink, fontWeight: "900" }}>
                       {option.label}
                     </Text>
                     <Text style={{ color: STUDIO.muted, fontSize: 12, marginTop: 4 }}>

@@ -1,7 +1,12 @@
 import React from "react";
 import { Modal, Pressable, Text, View } from "react-native";
 
-import { STUDIO, StudioButton, StudioModalCard, StudioTitle } from "@/components/studio/StudioPrimitives";
+import {
+  STUDIO,
+  StudioButton,
+  StudioModalCard,
+  StudioModalHeader,
+} from "@/components/studio/StudioPrimitives";
 
 type SizeOption = { label: string; width: number };
 
@@ -43,25 +48,18 @@ export function SizeModal({
         onPress={onClose}
         style={{
           flex: 1,
-          backgroundColor: "rgba(32,23,16,0.42)",
+          backgroundColor: "rgba(26,18,12,0.54)",
           justifyContent: "center",
           padding: 20,
         }}
       >
         <Pressable onPress={() => {}}>
           <StudioModalCard width={420}>
-          <Text style={{ fontSize: 12, color: STUDIO.accentWarm, fontWeight: "900", letterSpacing: 1.1, textTransform: "uppercase" }}>
-            Tool weight
-          </Text>
-          <StudioTitle size={26}>
-            Select size (
-            {sizeModalTool === "pen"
-              ? "Pen"
-              : sizeModalTool === "highlighter"
-                ? "Highlighter"
-                : "Eraser"}
-            )
-          </StudioTitle>
+          <StudioModalHeader
+            eyebrow="Tool weight"
+            title={`Select size (${sizeModalTool === "pen" ? "Pen" : sizeModalTool === "highlighter" ? "Highlighter" : "Eraser"})`}
+            description="Choose a stroke profile that matches the kind of mark you want to make."
+          />
 
           <View style={{ flexDirection: "row", gap: 10 }}>
             {sizeOptions.map((opt, idx) => {
@@ -85,17 +83,26 @@ export function SizeModal({
                   }}
                   style={{
                     flex: 1,
-                    paddingVertical: 12,
-                    borderRadius: 16,
+                    paddingVertical: 14,
+                    borderRadius: 20,
                     borderWidth: 1,
-                    borderColor: selected ? STUDIO.lineStrong : STUDIO.line,
+                    borderColor: selected
+                      ? "rgba(35,52,70,0.34)"
+                      : "rgba(77,55,34,0.14)",
                     backgroundColor: selected
-                      ? "rgba(35,52,70,0.08)"
-                      : "rgba(255,249,241,0.56)",
+                      ? "rgba(35,52,70,0.14)"
+                      : "rgba(255,250,244,0.72)",
                     alignItems: "center",
+                    shadowColor: selected ? STUDIO.accent : "#000",
+                    shadowOpacity: selected ? 0.12 : 0.04,
+                    shadowRadius: selected ? 14 : 8,
+                    shadowOffset: { width: 0, height: 8 },
+                    boxShadow: selected
+                      ? "0 14px 28px rgba(35,52,70,0.18)"
+                      : "0 8px 18px rgba(56,42,26,0.06)",
                   }}
                 >
-                  <Text style={{ color: STUDIO.ink, fontWeight: "900" }}>
+                  <Text style={{ color: selected ? STUDIO.accent : STUDIO.ink, fontWeight: "900" }}>
                     {opt.label}
                   </Text>
                   <Text style={{ color: STUDIO.muted, fontSize: 12 }}>

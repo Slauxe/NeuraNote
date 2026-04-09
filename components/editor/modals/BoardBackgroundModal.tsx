@@ -1,7 +1,12 @@
 import React from "react";
-import { Modal, Pressable, Text } from "react-native";
+import { Modal, Pressable, Text, View } from "react-native";
 
-import { STUDIO, StudioButton, StudioModalCard, StudioTitle } from "@/components/studio/StudioPrimitives";
+import {
+  STUDIO,
+  StudioButton,
+  StudioModalCard,
+  StudioModalHeader,
+} from "@/components/studio/StudioPrimitives";
 import type { InfiniteBoardBackgroundStyle } from "@/lib/noteDocument";
 
 type BoardBackgroundModalProps = {
@@ -30,21 +35,18 @@ export function BoardBackgroundModal({
         onPress={onClose}
         style={{
           flex: 1,
-          backgroundColor: "rgba(32,23,16,0.42)",
+          backgroundColor: "rgba(26,18,12,0.54)",
           justifyContent: "center",
           padding: 20,
         }}
       >
         <Pressable onPress={() => {}}>
           <StudioModalCard width={360}>
-          <Text style={{ fontSize: 12, color: STUDIO.accentWarm, fontWeight: "900", letterSpacing: 1.1, textTransform: "uppercase" }}>
-            Board material
-          </Text>
-          <StudioTitle size={26}>Board background</StudioTitle>
-
-          <Text style={{ color: STUDIO.muted, fontSize: 12 }}>
-            Choose how the infinite canvas background should look.
-          </Text>
+          <StudioModalHeader
+            eyebrow="Board material"
+            title="Board background"
+            description="Choose the visual structure for the infinite canvas so sketches feel grounded."
+          />
 
           {OPTIONS.map((option) => {
             const selected = option === value;
@@ -55,19 +57,26 @@ export function BoardBackgroundModal({
                 key={option}
                 onPress={() => onSelect(option)}
                 style={{
-                  paddingVertical: 12,
+                  paddingVertical: 14,
                   paddingHorizontal: 14,
-                  borderRadius: 16,
+                  borderRadius: 20,
                   borderWidth: 1,
-                  borderColor: selected ? STUDIO.lineStrong : STUDIO.line,
+                  borderColor: selected
+                    ? "rgba(35,52,70,0.34)"
+                    : "rgba(77,55,34,0.14)",
                   backgroundColor: selected
-                    ? "rgba(35,52,70,0.08)"
-                    : "rgba(255,249,241,0.56)",
+                    ? "rgba(35,52,70,0.14)"
+                    : "rgba(255,250,244,0.72)",
                 }}
               >
-                <Text style={{ color: STUDIO.ink, fontWeight: "900" }}>
-                  {label}
-                </Text>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                  <Text style={{ color: selected ? STUDIO.accent : STUDIO.ink, fontWeight: "900" }}>
+                    {label}
+                  </Text>
+                  <Text style={{ color: STUDIO.muted, fontSize: 11 }}>
+                    {option === "grid" ? "Measured" : option === "dots" ? "Light guide" : "Open field"}
+                  </Text>
+                </View>
               </Pressable>
             );
           })}

@@ -2,7 +2,12 @@ import React from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
 
 import { PageThumbnail } from "@/components/editor/PageCanvas";
-import { STUDIO, StudioButton, StudioModalCard, StudioTitle } from "@/components/studio/StudioPrimitives";
+import {
+  STUDIO,
+  StudioButton,
+  StudioModalCard,
+  StudioModalHeader,
+} from "@/components/studio/StudioPrimitives";
 import type { Stroke } from "@/lib/editorTypes";
 import type { PageSizePreset, PageTemplate } from "@/lib/noteDocument";
 
@@ -62,62 +67,50 @@ export function PagesModal({
         onPress={onClose}
         style={{
           flex: 1,
-          backgroundColor: "rgba(32,23,16,0.42)",
+          backgroundColor: "rgba(26,18,12,0.54)",
           justifyContent: "center",
           padding: 20,
         }}
       >
         <Pressable onPress={() => {}}>
           <StudioModalCard width={440}>
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "flex-start",
-              justifyContent: "space-between",
-              gap: 12,
-            }}
-          >
-            <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 12, color: STUDIO.accentWarm, fontWeight: "900", letterSpacing: 1.1, textTransform: "uppercase" }}>
-                Document flow
-              </Text>
-              <StudioTitle size={26}>Pages</StudioTitle>
-            </View>
-
-            <Pressable
-              onPress={onClose}
-              style={{
-                paddingHorizontal: 12,
-                paddingVertical: 8,
-                borderRadius: 999,
-                borderWidth: 1,
-                borderColor: STUDIO.line,
-                backgroundColor: "rgba(255,249,241,0.72)",
-              }}
-            >
-              <Text style={{ color: STUDIO.ink, fontWeight: "900", fontSize: 12 }}>
-                Close
-              </Text>
-            </Pressable>
-          </View>
-          <Text style={{ color: STUDIO.muted, fontSize: 12 }}>
-            Current page {currentPageIndex + 1} of {Math.max(1, pages.length)}
-          </Text>
+          <StudioModalHeader
+            eyebrow="Document flow"
+            title="Pages"
+            description={`Current page ${currentPageIndex + 1} of ${Math.max(1, pages.length)}`}
+            action={
+              <Pressable
+                onPress={onClose}
+                style={{
+                  paddingHorizontal: 14,
+                  paddingVertical: 9,
+                  borderRadius: 999,
+                  borderWidth: 1,
+                  borderColor: "rgba(77,55,34,0.14)",
+                  backgroundColor: "rgba(255,250,244,0.82)",
+                }}
+              >
+                <Text style={{ color: STUDIO.ink, fontWeight: "900", fontSize: 12 }}>
+                  Close
+                </Text>
+              </Pressable>
+            }
+          />
 
           <View style={{ flexDirection: "row", gap: 10 }}>
             <Pressable
               onPress={onAddPage}
               style={{
                 flex: 1,
-                paddingVertical: 12,
-                borderRadius: 16,
+                paddingVertical: 14,
+                borderRadius: 18,
                 borderWidth: 1,
-                borderColor: STUDIO.line,
-                backgroundColor: "rgba(255,249,241,0.72)",
+                borderColor: "rgba(35,52,70,0.16)",
+                backgroundColor: "rgba(35,52,70,0.10)",
                 alignItems: "center",
               }}
             >
-              <Text style={{ color: STUDIO.ink, fontWeight: "900" }}>
+              <Text style={{ color: STUDIO.accent, fontWeight: "900" }}>
                 Add Below
               </Text>
             </Pressable>
@@ -126,12 +119,13 @@ export function PagesModal({
               onPress={onRemovePage}
               style={{
                 flex: 1,
-                paddingVertical: 12,
-                borderRadius: 16,
+                paddingVertical: 14,
+                borderRadius: 18,
                 borderWidth: 1,
-                borderColor: pages.length <= 1 ? STUDIO.line : "rgba(255,243,235,0.18)",
+                borderColor:
+                  pages.length <= 1 ? "rgba(77,55,34,0.14)" : "rgba(255,243,235,0.20)",
                 backgroundColor:
-                  pages.length <= 1 ? "rgba(255,249,241,0.72)" : STUDIO.danger,
+                  pages.length <= 1 ? "rgba(255,250,244,0.72)" : STUDIO.danger,
                 alignItems: "center",
                 opacity: pages.length <= 1 ? 0.6 : 1,
               }}
@@ -163,13 +157,13 @@ export function PagesModal({
                       paddingVertical: 8,
                       borderRadius: 999,
                       borderWidth: 1,
-                      borderColor: selected ? STUDIO.lineStrong : STUDIO.line,
+                      borderColor: selected ? "rgba(35,52,70,0.30)" : "rgba(77,55,34,0.14)",
                       backgroundColor: selected
-                        ? "rgba(35,52,70,0.08)"
-                        : "rgba(255,249,241,0.52)",
+                        ? "rgba(35,52,70,0.12)"
+                        : "rgba(255,250,244,0.62)",
                     }}
                   >
-                    <Text style={{ color: STUDIO.ink, fontWeight: "800", fontSize: 12 }}>
+                    <Text style={{ color: selected ? STUDIO.accent : STUDIO.ink, fontWeight: "800", fontSize: 12 }}>
                       {option}
                     </Text>
                   </Pressable>
@@ -194,13 +188,13 @@ export function PagesModal({
                       paddingVertical: 8,
                       borderRadius: 999,
                       borderWidth: 1,
-                      borderColor: selected ? STUDIO.lineStrong : STUDIO.line,
+                      borderColor: selected ? "rgba(35,52,70,0.30)" : "rgba(77,55,34,0.14)",
                       backgroundColor: selected
-                        ? "rgba(35,52,70,0.08)"
-                        : "rgba(255,249,241,0.52)",
+                        ? "rgba(35,52,70,0.12)"
+                        : "rgba(255,250,244,0.62)",
                     }}
                   >
-                    <Text style={{ color: STUDIO.ink, fontWeight: "800", fontSize: 12 }}>
+                    <Text style={{ color: selected ? STUDIO.accent : STUDIO.ink, fontWeight: "800", fontSize: 12 }}>
                       {option.toUpperCase()}
                     </Text>
                   </Pressable>
@@ -230,14 +224,18 @@ export function PagesModal({
                       flex: 1,
                       paddingVertical: 10,
                       paddingHorizontal: 12,
-                      borderRadius: 18,
+                      borderRadius: 20,
                       borderWidth: 1,
                       borderColor: selected
-                        ? STUDIO.lineStrong
-                        : STUDIO.line,
+                        ? "rgba(35,52,70,0.30)"
+                        : "rgba(77,55,34,0.14)",
                       backgroundColor: selected
-                        ? "rgba(35,52,70,0.08)"
-                        : "rgba(255,249,241,0.52)",
+                        ? "rgba(35,52,70,0.12)"
+                        : "rgba(255,250,244,0.68)",
+                      shadowColor: selected ? STUDIO.accent : "#000",
+                      shadowOpacity: selected ? 0.12 : 0.04,
+                      shadowRadius: selected ? 14 : 8,
+                      shadowOffset: { width: 0, height: 8 },
                     }}
                   >
                     <View
@@ -252,7 +250,7 @@ export function PagesModal({
                         selected={selected}
                         label={`Page ${idx + 1}`}
                       />
-                      <Text style={{ color: STUDIO.ink, fontWeight: "800" }}>
+                      <Text style={{ color: selected ? STUDIO.accent : STUDIO.ink, fontWeight: "800" }}>
                         {selected ? "Current" : "Select"}
                       </Text>
                       <Pressable
@@ -263,10 +261,10 @@ export function PagesModal({
                           paddingVertical: 6,
                           borderRadius: 999,
                           borderWidth: 1,
-                          borderColor: STUDIO.line,
+                          borderColor: "rgba(77,55,34,0.14)",
                           backgroundColor: bookmarkedPages.includes(idx)
-                            ? "rgba(154,92,55,0.14)"
-                            : "rgba(255,249,241,0.4)",
+                            ? "rgba(154,92,55,0.18)"
+                            : "rgba(255,250,244,0.54)",
                         }}
                       >
                         <Text style={{ color: STUDIO.ink, fontWeight: "800", fontSize: 11 }}>
@@ -281,15 +279,15 @@ export function PagesModal({
                     style={{
                       width: 42,
                       height: 42,
-                      borderRadius: 14,
+                      borderRadius: 16,
                       alignItems: "center",
                       justifyContent: "center",
                       borderWidth: 1,
-                      borderColor: STUDIO.line,
+                      borderColor: "rgba(77,55,34,0.14)",
                       backgroundColor:
                         idx === 0
-                          ? "rgba(255,249,241,0.52)"
-                          : "rgba(35,52,70,0.08)",
+                          ? "rgba(255,250,244,0.52)"
+                          : "rgba(35,52,70,0.10)",
                       opacity: idx === 0 ? 0.5 : 1,
                     }}
                   >
@@ -303,15 +301,15 @@ export function PagesModal({
                     style={{
                       width: 42,
                       height: 42,
-                      borderRadius: 14,
+                      borderRadius: 16,
                       alignItems: "center",
                       justifyContent: "center",
                       borderWidth: 1,
-                      borderColor: STUDIO.line,
+                      borderColor: "rgba(77,55,34,0.14)",
                       backgroundColor:
                         idx === pages.length - 1
-                          ? "rgba(255,249,241,0.52)"
-                          : "rgba(35,52,70,0.08)",
+                          ? "rgba(255,250,244,0.52)"
+                          : "rgba(35,52,70,0.10)",
                       opacity: idx === pages.length - 1 ? 0.5 : 1,
                     }}
                   >

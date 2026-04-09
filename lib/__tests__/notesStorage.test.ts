@@ -6,12 +6,17 @@ jest.mock("expo-file-system/legacy", () => ({}));
 
 import {
   clearNoteDraft,
+  createFolder,
   createNote,
+  deleteFolder,
   deleteNote,
   duplicateNote,
+  listLibraryItems,
   listNotes,
   loadNote,
   loadNoteDraft,
+  moveLibraryItem,
+  renameFolder,
   saveNote,
   saveNoteDraft,
 } from "../notesStorage";
@@ -138,5 +143,39 @@ describe("notesStorage web persistence", () => {
 
     const duplicated = await loadNote(duplicateId);
     expect(duplicated?.doc.pages?.[0]?.strokes).toEqual([{ id: "stroke-1" }]);
+  });
+
+  it("creates folders and moves notes between nested folders", async () => {
+    const projectsId = await createFolder("Projects");
+    const mathId = await createFolder("Math", projectsId);
+    const noteId = await createNote("Vectors", "#1188FF", undefined, projectsId);
+
+    let items = await listLibraryItems();
+    expect(items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: projectsId, type: "folder", parentId: null }),
+        expect.objectContaining({ id: mathId, type: "folder", parentId: projectsId }),
+        expect.objectContaining({ id: noteId, type: "note", parentId: projectsId }),
+      ]),
+    );
+
+    await moveLibraryItem(noteId, mathId);
+    await renameFolder(mathId, "Linear Algebra");
+
+    items = await listLibraryItems();
+    expect(items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: mathId, type: "folder", title: "Linear Algebra" }),
+        expect.objectContaining({ id: noteId, type: "note", parentId: mathId }),
+      ]),
+    );
+
+    const movedNote = await loadNote(noteId);
+    expect(movedNote?.meta.parentId).toBe(mathId);
+
+    await deleteFolder(projectsId);
+    expect(await loadNote(noteId)).toBeNull();
+    expect(await listLibraryItems()).toEqual([]);
+    expect(await listNotes()).toEqual([]);
   });
 });

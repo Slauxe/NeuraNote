@@ -9,7 +9,11 @@ import React from "react";
 import { Modal, Platform, Pressable, Text, View } from "react-native";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 
-import { STUDIO, StudioModalCard, StudioTitle } from "@/components/studio/StudioPrimitives";
+import {
+  STUDIO,
+  StudioModalCard,
+  StudioModalHeader,
+} from "@/components/studio/StudioPrimitives";
 
 const IS_WEB = Platform.OS === "web";
 
@@ -105,7 +109,7 @@ export function ColorModal({
         onPress={onClose}
         style={{
           flex: 1,
-          backgroundColor: "rgba(32,23,16,0.32)",
+          backgroundColor: "rgba(26,18,12,0.46)",
           alignItems: "flex-end",
           justifyContent: "flex-start",
           paddingTop: 60,
@@ -115,80 +119,59 @@ export function ColorModal({
       >
         <Pressable onPress={() => {}}>
           <StudioModalCard width={340}>
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "space-between",
-              marginBottom: 12,
-            }}
-          >
-            <View>
-              <Text style={{ color: STUDIO.accentWarm, fontSize: 11, fontWeight: "900", letterSpacing: 1.1, textTransform: "uppercase" }}>
-                Ink palette
-              </Text>
-              <StudioTitle size={24}>Color</StudioTitle>
-            </View>
-
-            <View style={{ flexDirection: "row", gap: 10 }}>
-              <Pressable
-                onPress={() => {
-                  const firstEmpty = colorSlots.findIndex((c) => !c);
-                  const target = firstEmpty === -1 ? 0 : firstEmpty;
-                  onSetColorSlots((prev) => {
-                    const next = [...prev];
-                    next[target] = penColor;
-                    return next;
-                  });
-                  onSetActiveSlotIndex(target);
-                }}
-                style={{
-                  width: 34,
-                  height: 34,
-                  borderRadius: 12,
-                  alignItems: "center",
-                  justifyContent: "center",
-                  backgroundColor: "rgba(255,249,241,0.72)",
-                  borderWidth: 1,
-                  borderColor: STUDIO.line,
-                }}
-              >
-                <Text
+          <StudioModalHeader
+            eyebrow="Ink palette"
+            title="Color"
+            description="Dial in a hue, then pin favorites to your quick slots."
+            action={
+              <View style={{ flexDirection: "row", gap: 10 }}>
+                <Pressable
+                  onPress={() => {
+                    const firstEmpty = colorSlots.findIndex((c) => !c);
+                    const target = firstEmpty === -1 ? 0 : firstEmpty;
+                    onSetColorSlots((prev) => {
+                      const next = [...prev];
+                      next[target] = penColor;
+                      return next;
+                    });
+                    onSetActiveSlotIndex(target);
+                  }}
                   style={{
-                    color: "#121826",
-                    fontSize: 18,
-                    fontWeight: "900",
+                    width: 38,
+                    height: 38,
+                    borderRadius: 14,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: "rgba(35,52,70,0.10)",
+                    borderWidth: 1,
+                    borderColor: "rgba(35,52,70,0.16)",
                   }}
                 >
-                  +
-                </Text>
-              </Pressable>
+                  <Text style={{ color: STUDIO.accent, fontSize: 18, fontWeight: "900" }}>
+                    +
+                  </Text>
+                </Pressable>
 
-              <Pressable
-                onPress={onClose}
-                style={{
-                  width: 34,
-                  height: 34,
-                  borderRadius: 12,
-                  alignItems: "center",
-                  justifyContent: "center",
-                  backgroundColor: "rgba(255,249,241,0.72)",
-                  borderWidth: 1,
-                  borderColor: STUDIO.line,
-                }}
-              >
-                <Text
+                <Pressable
+                  onPress={onClose}
                   style={{
-                    color: "#121826",
-                    fontSize: 18,
-                    fontWeight: "900",
+                    width: 38,
+                    height: 38,
+                    borderRadius: 14,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: "rgba(255,250,244,0.78)",
+                    borderWidth: 1,
+                    borderColor: "rgba(77,55,34,0.14)",
                   }}
                 >
-                  x
-                </Text>
-              </Pressable>
-            </View>
-          </View>
+                  <Text style={{ color: STUDIO.ink, fontSize: 16, fontWeight: "900" }}>
+                    x
+                  </Text>
+                </Pressable>
+              </View>
+            }
+          />
 
           <View style={{ gap: 10 }}>
             <View
@@ -196,16 +179,22 @@ export function ColorModal({
                 flexDirection: "row",
                 alignItems: "center",
                 justifyContent: "space-between",
+                backgroundColor: "rgba(255,255,255,0.34)",
+                paddingHorizontal: 12,
+                paddingVertical: 10,
+                borderRadius: 18,
+                borderWidth: 1,
+                borderColor: "rgba(77,55,34,0.10)",
               }}
             >
-              <Text style={{ color: STUDIO.muted, fontSize: 12 }}>
+              <Text style={{ color: STUDIO.muted, fontSize: 12, fontWeight: "800" }}>
                 Hue
               </Text>
 
               <View
                 style={{
-                  width: 22,
-                  height: 22,
+                  width: 26,
+                  height: 26,
                   borderRadius: 999,
                   backgroundColor: penColor,
                   borderWidth: 1,
@@ -220,8 +209,9 @@ export function ColorModal({
                 borderRadius: 14,
                 overflow: "hidden",
                 borderWidth: 1,
-                borderColor: STUDIO.line,
+                borderColor: "rgba(77,55,34,0.14)",
                 justifyContent: "center",
+                backgroundColor: "rgba(255,255,255,0.36)",
               }}
             >
               <View
@@ -252,7 +242,7 @@ export function ColorModal({
               />
             </View>
 
-            <Text style={{ color: STUDIO.muted, fontSize: 12 }}>
+            <Text style={{ color: STUDIO.muted, fontSize: 12, lineHeight: 18 }}>
               Tap a slot to use, long-press to save
             </Text>
 
@@ -277,14 +267,18 @@ export function ColorModal({
                       onSetActiveSlotIndex(idx);
                     }}
                     style={{
-                      width: 26,
-                      height: 26,
+                      width: 30,
+                      height: 30,
                       borderRadius: 999,
                       backgroundColor: c || "rgba(20,26,34,0.06)",
                       borderWidth: selected ? 3 : 1,
                       borderColor: selected
-                        ? STUDIO.ink
+                        ? STUDIO.accent
                         : STUDIO.lineStrong,
+                      shadowColor: selected ? STUDIO.accent : "#000",
+                      shadowOpacity: selected ? 0.18 : 0.04,
+                      shadowRadius: selected ? 12 : 6,
+                      shadowOffset: { width: 0, height: 6 },
                     }}
                   />
                 );
