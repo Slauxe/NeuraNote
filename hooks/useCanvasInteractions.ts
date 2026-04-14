@@ -1,9 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Platform } from "react-native";
 import { Gesture } from "react-native-gesture-handler";
-import { Skia } from "@shopify/react-native-skia";
-import { notifyChange } from "@shopify/react-native-skia/lib/module/external/reanimated/interpolators";
-import { runOnJS, useSharedValue, type SharedValue } from "react-native-reanimated";
 
 import {
   buildSegmentBBoxes,
@@ -49,9 +46,9 @@ export type LivePreviewState = {
 };
 
 export type NativeStrokePreviewState = {
-  path: SharedValue<any>;
-  points: SharedValue<Point[]>;
-  visible: SharedValue<boolean>;
+  path: null;
+  points: { value: Point[] };
+  visible: { value: boolean };
 };
 
 type UseCanvasInteractionsArgs = {
@@ -139,13 +136,12 @@ export function useCanvasInteractions({
   infiniteEdgeTrigger,
   infiniteExpandX,
   infiniteExpandY,
-  onPerfEvent,
 }: UseCanvasInteractionsArgs) {
   const [currentPath, setCurrentPath] = useState("");
   const [eraserCursor, setEraserCursor] = useState<Point | null>(null);
   const [lassoPath, setLassoPath] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [isInteracting, setIsInteracting] = useState(false);
+  const [isInteracting] = useState(false);
   const [selectionPreviewOffset, setSelectionPreviewOffset] = useState({
     dx: 0,
     dy: 0,
@@ -161,6 +157,14 @@ export function useCanvasInteractions({
     eraserRadius: activeWidthRef.current / 2,
     pageIsActive: false,
   });
+  const nativeStrokePreview = useMemo<NativeStrokePreviewState>(
+    () => ({
+      path: null,
+      points: { value: [] },
+      visible: { value: false },
+    }),
+    [],
+  );
   const selectedSet = useMemo(
     () => (selectedIds.length > 0 ? new Set(selectedIds) : EMPTY_SELECTION),
     [selectedIds],
@@ -262,7 +266,6 @@ export function useCanvasInteractions({
   const selectedIdsRef = useRef(selectedIds);
   const selectedSetRef = useRef(selectedSet);
   const isInfiniteCanvasRef = useRef(isInfiniteCanvas);
-  const isInteractingRef = useRef(false);
 
   const isPointerDown = useRef(false);
   const pointerPageIndex = useRef<number | null>(null);
@@ -291,28 +294,9 @@ export function useCanvasInteractions({
   const moveDidMutate = useRef(false);
   const selectionClipboard = useRef<Stroke[]>([]);
   const [hasClipboard, setHasClipboard] = useState(false);
-  const nativeStrokeVisible = useSharedValue(false);
-  const nativeStrokePath = useSharedValue(Skia.Path.Make());
-  const nativeStrokePoints = useSharedValue<Point[]>([]);
-  const nativeStrokePreviewPoints = useSharedValue<Point[]>([]);
-  const nativeStrokePreviewCount = useSharedValue(0);
-  const nativeTool = useSharedValue<Tool>(tool);
-  const nativeZoom = useSharedValue(zoomRef.current);
-  const nativeCanvasWidth = useSharedValue(canvasSizeRef.current.width);
-  const nativeCanvasHeight = useSharedValue(canvasSizeRef.current.height);
-  const nativeCurrentPageIndex = useSharedValue(currentPageIndex);
-  const nativeIsInfiniteCanvas = useSharedValue(isInfiniteCanvas);
-  const nativeStrokeActive = useSharedValue(false);
-  const nativeStrokePointerDown = useSharedValue(false);
-  const nativeStrokeFinalizeHandled = useSharedValue(false);
-  const pendingNativeStrokeClear = useRef(false);
-  const pendingNativeStrokeId = useRef<string | null>(null);
-  const nativeStrokeClearRafId = useRef<number | null>(null);
 
   useEffect(() => {
     toolRef.current = tool;
-    livePreviewStateRef.current.tool = tool;
-    nativeTool.value = tool;
   }, [tool]);
 
   useEffect(() => {
@@ -324,48 +308,6 @@ export function useCanvasInteractions({
     shapeSnapEnabledRef.current = shapeSnapEnabled;
     gridStepRef.current = gridStep;
   }, [gridStep, pageTemplate, shapeSnapEnabled, snapToGrid]);
-
-  const syncLivePreviewState = useCallback(
-    (patch: Partial<LivePreviewState>) => {
-      livePreviewStateRef.current = {
-        ...livePreviewStateRef.current,
-        activeColor: activeColorRef.current,
-        activeWidth: activeWidthRef.current,
-        activeOpacity: activeAlphaRef.current,
-        eraserRadius: activeWidthRef.current / 2,
-        tool: toolRef.current,
-        ...patch,
-      };
-    },
-    [activeAlphaRef, activeColorRef, activeWidthRef],
-  );
-
-  useEffect(() => {
-    nativeZoom.value = zoomRef.current;
-  }, [nativeZoom, zoomRef]);
-
-  useEffect(() => {
-    nativeCanvasWidth.value = canvasSizeRef.current.width;
-    nativeCanvasHeight.value = canvasSizeRef.current.height;
-  }, [canvasSizeRef, nativeCanvasHeight, nativeCanvasWidth]);
-
-  useEffect(() => {
-    nativeCurrentPageIndex.value = currentPageIndex;
-  }, [currentPageIndex, nativeCurrentPageIndex]);
-
-  useEffect(() => {
-    nativeIsInfiniteCanvas.value = isInfiniteCanvas;
-  }, [isInfiniteCanvas, nativeIsInfiniteCanvas]);
-
-  const setInteractionActive = useCallback(
-    (active: boolean) => {
-      if (isInteractingRef.current === active) return;
-      isInteractingRef.current = active;
-      setIsInteracting(active);
-      onPerfEvent?.({ type: "interaction", active });
-    },
-    [onPerfEvent],
-  );
 
   const snapPoint = useCallback((point: Point, force = false) => {
     const template = pageTemplateRef.current;
@@ -827,10 +769,6 @@ export function useCanvasInteractions({
   );
 
   const recomputePath = useCallback(() => {
-    syncLivePreviewState({
-      currentPath: currentPathDraft.current,
-      pageIsActive: isPointerDown.current,
-    });
     if (pending.current) return;
 
     if (typeof requestAnimationFrame !== "function") {
@@ -843,7 +781,7 @@ export function useCanvasInteractions({
       pending.current = false;
       setCurrentPath(currentPathDraft.current);
     });
-  }, [syncLivePreviewState]);
+  }, []);
 
   const commitEraserCursor = useCallback(
     (point: Point | null, immediate = false) => {
@@ -855,14 +793,12 @@ export function useCanvasInteractions({
           eraserCursorRenderRaf.current = null;
         }
         eraserCursorPending.current = false;
-        syncLivePreviewState({ eraserCursor: point, pageIsActive: point != null });
         setEraserCursor(point);
         return;
       }
 
       if (eraserCursorPending.current) return;
       if (typeof requestAnimationFrame !== "function") {
-        syncLivePreviewState({ eraserCursor: point, pageIsActive: point != null });
         setEraserCursor(point);
         return;
       }
@@ -871,14 +807,10 @@ export function useCanvasInteractions({
       eraserCursorRenderRaf.current = requestAnimationFrame(() => {
         eraserCursorPending.current = false;
         eraserCursorRenderRaf.current = null;
-        syncLivePreviewState({
-          eraserCursor: eraserCursorDraft.current,
-          pageIsActive: eraserCursorDraft.current != null || isPointerDown.current,
-        });
         setEraserCursor(eraserCursorDraft.current);
       });
     },
-    [syncLivePreviewState],
+    [],
   );
 
   const commitLassoPath = useCallback((path: string, immediate = false) => {
@@ -890,14 +822,12 @@ export function useCanvasInteractions({
         lassoRenderRaf.current = null;
       }
       lassoPending.current = false;
-      syncLivePreviewState({ lassoPath: path, pageIsActive: path.length > 0 });
       setLassoPath(path);
       return;
     }
 
     if (lassoPending.current) return;
     if (typeof requestAnimationFrame !== "function") {
-      syncLivePreviewState({ lassoPath: path, pageIsActive: path.length > 0 });
       setLassoPath(path);
       return;
     }
@@ -906,13 +836,9 @@ export function useCanvasInteractions({
     lassoRenderRaf.current = requestAnimationFrame(() => {
       lassoPending.current = false;
       lassoRenderRaf.current = null;
-      syncLivePreviewState({
-        lassoPath: lassoPathDraft.current,
-        pageIsActive: lassoPathDraft.current.length > 0 || isPointerDown.current,
-      });
       setLassoPath(lassoPathDraft.current);
     });
-  }, [syncLivePreviewState]);
+  }, []);
 
   const previewPointStep = useCallback(
     () => Math.max(3.5, minDistPx * 2),
@@ -929,105 +855,10 @@ export function useCanvasInteractions({
       currentPoints.current = [point];
       currentPreviewPoints.current = [point];
       rebuildPreviewPath();
-      syncLivePreviewState({
-        currentPath: currentPathDraft.current,
-        pageIsActive: true,
-      });
       setCurrentPath(currentPathDraft.current);
     },
-    [ensureInfiniteCanvasRoom, rebuildPreviewPath, syncLivePreviewState],
+    [ensureInfiniteCanvasRoom, rebuildPreviewPath],
   );
-
-  const clearNativeStrokePreview = useCallback(() => {
-    if (nativeStrokeClearRafId.current != null) {
-      cancelAnimationFrame(nativeStrokeClearRafId.current);
-      nativeStrokeClearRafId.current = null;
-    }
-    pendingNativeStrokeClear.current = false;
-    pendingNativeStrokeId.current = null;
-    nativeStrokeActive.value = false;
-    nativeStrokePointerDown.value = false;
-    nativeStrokeFinalizeHandled.value = false;
-    nativeStrokePath.value.reset();
-    notifyChange(nativeStrokePath);
-    nativeStrokePoints.value = [];
-    nativeStrokePreviewPoints.value = [];
-    nativeStrokePreviewCount.value = 0;
-    nativeStrokeVisible.value = false;
-  }, [
-    nativeStrokeActive,
-    nativeStrokeFinalizeHandled,
-    nativeStrokePath,
-    nativeStrokePointerDown,
-    nativeStrokePoints,
-    nativeStrokePreviewCount,
-    nativeStrokePreviewPoints,
-    nativeStrokeVisible,
-  ]);
-
-  const beginNativeStrokeInteraction = useCallback(
-    (pageIndex: number) => {
-      pendingNativeStrokeClear.current = false;
-      isPointerDown.current = true;
-      pointerPageIndex.current = pageIndex;
-      setInteractionActive(true);
-      syncLivePreviewState({ currentPath: "", pageIsActive: true });
-    },
-    [setInteractionActive, syncLivePreviewState],
-  );
-
-  const finalizeNativeStroke = useCallback(
-    (resolvedPoints: Point[]) => {
-      if (resolvedPoints.length < minPointsToSave) {
-        clearNativeStrokePreview();
-        syncLivePreviewState({ currentPath: "", pageIsActive: false });
-        setCurrentPath("");
-        return;
-      }
-
-      const d = pointsToSmoothPath(resolvedPoints);
-      if (d.trim().length > 0) {
-        const strokeId = uid();
-        const stroke: Stroke = {
-          id: strokeId,
-          points: resolvedPoints.map((point) => ({ ...point })),
-          segmentBBoxes: buildSegmentBBoxes(resolvedPoints),
-          d,
-          w: activeWidthRef.current,
-          c: activeColorRef.current,
-          a: activeAlphaRef.current,
-          dashed: false,
-          dx: 0,
-          dy: 0,
-          bbox: computeBBox(resolvedPoints),
-        };
-        commitCurrentPageStrokes((prev) => [...prev, stroke]);
-        pendingNativeStrokeClear.current = true;
-        pendingNativeStrokeId.current = strokeId;
-        return;
-      }
-
-      clearNativeStrokePreview();
-      syncLivePreviewState({ currentPath: "", pageIsActive: false });
-      setCurrentPath("");
-    },
-    [
-      activeAlphaRef,
-      activeColorRef,
-      activeWidthRef,
-      clearNativeStrokePreview,
-      commitCurrentPageStrokes,
-      minPointsToSave,
-      syncLivePreviewState,
-    ],
-  );
-
-  const endNativeStrokeInteraction = useCallback(() => {
-    isPointerDown.current = false;
-    pointerPageIndex.current = null;
-    nativeStrokePointerDown.value = false;
-    setInteractionActive(false);
-  }, [nativeStrokePointerDown, setInteractionActive]);
 
   const extendStroke = useCallback(
     (point: Point) => {
@@ -1107,10 +938,6 @@ export function useCanvasInteractions({
       currentPoints.current = [];
       currentPreviewPoints.current = [];
       currentPathDraft.current = "";
-      syncLivePreviewState({
-        currentPath: "",
-        pageIsActive: false,
-      });
       setCurrentPath("");
       return;
     }
@@ -1179,10 +1006,6 @@ export function useCanvasInteractions({
     currentPoints.current = [];
     currentPreviewPoints.current = [];
     currentPathDraft.current = "";
-    syncLivePreviewState({
-      currentPath: "",
-      pageIsActive: false,
-    });
     setCurrentPath("");
   }, [
     activeColorRef,
@@ -1202,13 +1025,8 @@ export function useCanvasInteractions({
     currentPoints.current = [];
     currentPreviewPoints.current = [];
     currentPathDraft.current = "";
-    clearNativeStrokePreview();
-    syncLivePreviewState({
-      currentPath: "",
-      pageIsActive: false,
-    });
     setCurrentPath("");
-  }, [clearNativeStrokePreview, syncLivePreviewState]);
+  }, []);
 
   const eraseAtPoints = useCallback(
     (points: Point[]) => {
@@ -1287,30 +1105,6 @@ export function useCanvasInteractions({
     queuedEraserPoints.current = [];
     eraseAtPoints(points);
   }, [eraseAtPoints]);
-
-  const acknowledgeActivePageRender = useCallback(
-    (renderedStrokes?: Stroke[]) => {
-      if (!pendingNativeStrokeClear.current) return;
-      if (nativeStrokePointerDown.value) return;
-      const expectedStrokeId = pendingNativeStrokeId.current;
-      if (
-        expectedStrokeId &&
-        !renderedStrokes?.some((stroke) => stroke.id === expectedStrokeId)
-      ) {
-        return;
-      }
-      if (nativeStrokeClearRafId.current != null) return;
-      nativeStrokeClearRafId.current = requestAnimationFrame(() => {
-        nativeStrokeClearRafId.current = null;
-        if (!pendingNativeStrokeClear.current) return;
-        if (nativeStrokePointerDown.value) return;
-        clearNativeStrokePreview();
-        syncLivePreviewState({ currentPath: "", pageIsActive: false });
-        setCurrentPath("");
-      });
-    },
-    [clearNativeStrokePreview, nativeStrokePointerDown, syncLivePreviewState],
-  );
 
   const queueEraserPoints = useCallback(
     (points: Point[]) => {
@@ -1957,15 +1751,13 @@ export function useCanvasInteractions({
         api.showEraserCursor(point, true);
         eraserDidMutate.current = false;
         lastEraserPoint.current = point;
-        setInteractionActive(true);
         api.eraseAtPoint(point);
         return;
       }
 
-      setInteractionActive(true);
       api.startStroke(point);
     },
-    [onTextPlacement, setInteractionActive, snapPoint],
+    [onTextPlacement, snapPoint],
   );
 
   const moveCanvasInteraction = useCallback(
@@ -2017,21 +1809,18 @@ export function useCanvasInteractions({
         api.showEraserCursor(null);
         lastEraserPoint.current = null;
         eraserDidMutate.current = false;
-        setInteractionActive(false);
         return;
       }
 
       if (toolRef.current === "lasso") {
         if (isMovingSelection.current) api.endMoveSelection();
         else api.finishLassoAndSelect();
-        setInteractionActive(false);
         return;
       }
 
       api.endStroke();
-      setInteractionActive(false);
     },
-    [setInteractionActive, strokesRef],
+    [strokesRef],
   );
 
   const cancelCanvasInteraction = useCallback((pageIndex: number) => {
@@ -2048,8 +1837,7 @@ export function useCanvasInteractions({
     api.clearLasso();
     lassoPoints.current = [];
     api.cancelStroke();
-    setInteractionActive(false);
-  }, [setInteractionActive]);
+  }, []);
 
   const toNativeGesturePoint = useCallback(
     (x: number, y: number): Point | null => {
@@ -2116,217 +1904,25 @@ export function useCanvasInteractions({
 
         return {
           nativeGesture: Gesture.Pan()
+            .runOnJS(true)
             .minDistance(0)
             .onStart((event) => {
-              "worklet";
-              const point = (() => {
-                const nextPoint = {
-                  x: event.x / nativeZoom.value,
-                  y: event.y / nativeZoom.value,
-                };
-                if (
-                  nextPoint.x < 0 ||
-                  nextPoint.y < 0 ||
-                  nextPoint.x > nativeCanvasWidth.value ||
-                  nextPoint.y > nativeCanvasHeight.value
-                ) {
-                  return null;
-                }
-                return nextPoint;
-              })();
-              const isOptimizedTool =
-                nativeTool.value === "pen" || nativeTool.value === "highlighter";
-
-              if (
-                Platform.OS !== "android" ||
-                !isOptimizedTool ||
-                pageIndex !== nativeCurrentPageIndex.value ||
-                !point
-              ) {
-                nativeStrokeActive.value = false;
-                nativeStrokeFinalizeHandled.value = false;
-                runOnJS(beginCanvasInteraction)(pageIndex, point);
-                return;
-              }
-
-              nativeStrokeActive.value = true;
-              nativeStrokePointerDown.value = true;
-              nativeStrokeFinalizeHandled.value = false;
-              nativeStrokeVisible.value = true;
-              nativeStrokePoints.value = [point];
-              nativeStrokePreviewPoints.value = [point];
-              nativeStrokePreviewCount.value = 1;
-              nativeStrokePath.value.reset();
-              nativeStrokePath.value.moveTo(point.x, point.y);
-              nativeStrokePath.value.lineTo(point.x + 0.01, point.y + 0.01);
-              notifyChange(nativeStrokePath);
-              runOnJS(beginNativeStrokeInteraction)(pageIndex);
-              if (
-                nativeIsInfiniteCanvas.value &&
-                (point.x >= nativeCanvasWidth.value - infiniteEdgeTrigger ||
-                  point.y >= nativeCanvasHeight.value - infiniteEdgeTrigger)
-              ) {
-                runOnJS(ensureInfiniteCanvasRoom)(point);
-              }
+              beginCanvasInteraction(
+                pageIndex,
+                toNativeGesturePoint(event.x, event.y),
+              );
             })
             .onUpdate((event) => {
-              "worklet";
-              const point = (() => {
-                const nextPoint = {
-                  x: event.x / nativeZoom.value,
-                  y: event.y / nativeZoom.value,
-                };
-                if (
-                  nextPoint.x < 0 ||
-                  nextPoint.y < 0 ||
-                  nextPoint.x > nativeCanvasWidth.value ||
-                  nextPoint.y > nativeCanvasHeight.value
-                ) {
-                  return null;
-                }
-                return nextPoint;
-              })();
-
-              if (!nativeStrokeActive.value || !point) {
-                runOnJS(moveCanvasInteraction)(pageIndex, point);
-                return;
-              }
-
-              const points = nativeStrokePoints.value;
-              const last = points[points.length - 1];
-              if (!last) {
-                nativeStrokePoints.value = [point];
-                nativeStrokePreviewPoints.value = [point];
-                nativeStrokePreviewCount.value = 1;
-                nativeStrokePath.value.reset();
-                nativeStrokePath.value.moveTo(point.x, point.y);
-                nativeStrokePath.value.lineTo(point.x + 0.01, point.y + 0.01);
-                notifyChange(nativeStrokePath);
-                return;
-              }
-
-              if (dist(last, point) < minDistPx) return;
-
-              if (
-                nativeIsInfiniteCanvas.value &&
-                (point.x >= nativeCanvasWidth.value - infiniteEdgeTrigger ||
-                  point.y >= nativeCanvasHeight.value - infiniteEdgeTrigger)
-              ) {
-                runOnJS(ensureInfiniteCanvasRoom)(point);
-              }
-
-              const smoothed = smoothTowards(last, point, strokeSmoothingAlpha);
-              const segmentLength = dist(last, smoothed);
-              const segmentStep = Math.max(1, minDistPx * 0.75);
-              const steps = Math.max(1, Math.ceil(segmentLength / segmentStep));
-              const previewStep = Math.max(3.5, minDistPx * 2);
-
-              for (let i = 1; i <= steps; i++) {
-                const nextPoint = lerpPoint(last, smoothed, i / steps);
-                nativeStrokePoints.modify((value) => {
-                  value.push(nextPoint);
-                  return value;
-                }, true);
-
-                const previewPoints = nativeStrokePreviewPoints.value;
-                const previewLast = previewPoints[previewPoints.length - 1];
-                if (previewLast && dist(previewLast, nextPoint) < previewStep) {
-                  continue;
-                }
-
-                nativeStrokePreviewPoints.modify((value) => {
-                  value.push(nextPoint);
-                  return value;
-                }, true);
-
-                const nextPreviewPoints = nativeStrokePreviewPoints.value;
-                const count = nextPreviewPoints.length;
-                if (count === 2) {
-                  nativeStrokePath.value.reset();
-                  nativeStrokePath.value.moveTo(
-                    nextPreviewPoints[0].x,
-                    nextPreviewPoints[0].y,
-                  );
-                  nativeStrokePath.value.lineTo(
-                    nextPreviewPoints[1].x,
-                    nextPreviewPoints[1].y,
-                  );
-                  nativeStrokePreviewCount.value = count;
-                  notifyChange(nativeStrokePath);
-                  continue;
-                }
-
-                if (count >= 3 && count > nativeStrokePreviewCount.value) {
-                  const latest = nextPreviewPoints[count - 1];
-                  nativeStrokePath.value.lineTo(latest.x, latest.y);
-                  nativeStrokePreviewCount.value = count;
-                  notifyChange(nativeStrokePath);
-                }
-              }
-
-              const resolvedPoints = nativeStrokePoints.value;
-              const lastResolvedPoint = resolvedPoints[resolvedPoints.length - 1];
-              const previewPoints = nativeStrokePreviewPoints.value;
-              const finalPreviewPoint = previewPoints[previewPoints.length - 1];
-              if (
-                lastResolvedPoint &&
-                (!finalPreviewPoint || dist(finalPreviewPoint, lastResolvedPoint) > 0.01)
-              ) {
-                nativeStrokePreviewPoints.modify((value) => {
-                  value.push(lastResolvedPoint);
-                  return value;
-                }, true);
-                const nextPreviewPoints = nativeStrokePreviewPoints.value;
-                const count = nextPreviewPoints.length;
-                if (count === 2) {
-                  nativeStrokePath.value.reset();
-                  nativeStrokePath.value.moveTo(
-                    nextPreviewPoints[0].x,
-                    nextPreviewPoints[0].y,
-                  );
-                  nativeStrokePath.value.lineTo(
-                    nextPreviewPoints[1].x,
-                    nextPreviewPoints[1].y,
-                  );
-                } else if (count >= 3 && count > nativeStrokePreviewCount.value) {
-                  nativeStrokePath.value.lineTo(
-                    nextPreviewPoints[count - 1].x,
-                    nextPreviewPoints[count - 1].y,
-                  );
-                }
-                nativeStrokePreviewCount.value = count;
-                notifyChange(nativeStrokePath);
-              }
+              moveCanvasInteraction(
+                pageIndex,
+                toNativeGesturePoint(event.x, event.y),
+              );
             })
             .onEnd(() => {
-              "worklet";
-              if (nativeStrokeActive.value) {
-                const resolvedPoints = nativeStrokePoints.value.map((point) => ({
-                  x: point.x,
-                  y: point.y,
-                }));
-                nativeStrokeFinalizeHandled.value = true;
-                nativeStrokeActive.value = false;
-                runOnJS(finalizeNativeStroke)(resolvedPoints);
-                runOnJS(endNativeStrokeInteraction)();
-                return;
-              }
-              runOnJS(endCanvasInteraction)(pageIndex);
+              endCanvasInteraction(pageIndex);
             })
             .onFinalize(() => {
-              "worklet";
-              if (nativeStrokeFinalizeHandled.value) {
-                nativeStrokeFinalizeHandled.value = false;
-                return;
-              }
-              if (nativeStrokeActive.value) {
-                nativeStrokeActive.value = false;
-                nativeStrokePointerDown.value = false;
-                runOnJS(cancelStroke)();
-                runOnJS(endNativeStrokeInteraction)();
-                return;
-              }
-              runOnJS(cancelCanvasInteraction)(pageIndex);
+              cancelCanvasInteraction(pageIndex);
             }),
         };
       }),
@@ -2340,13 +1936,11 @@ export function useCanvasInteractions({
     ],
   );
 
-  const nativeStrokePreview = useMemo(
-    () => ({
-      path: nativeStrokePath,
-      points: nativeStrokePreviewPoints,
-      visible: nativeStrokeVisible,
-    }),
-    [nativeStrokePath, nativeStrokePreviewPoints, nativeStrokeVisible],
+  const acknowledgeActivePageRender = useCallback(
+    (_renderedStrokes?: Stroke[]) => {
+      return;
+    },
+    [],
   );
 
   return {
