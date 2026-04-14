@@ -10,6 +10,7 @@ export type PageBackground = {
 export type Stroke = {
   id: string;
   points: Point[];
+  segmentBBoxes: { minX: number; minY: number; maxX: number; maxY: number }[];
   d: string;
   w: number;
   c: string;
@@ -27,8 +28,8 @@ export type Stroke = {
 
 export const PAGE_W = 850;
 export const PAGE_H = 1100;
-export const INFINITE_CANVAS_W = 6000;
-export const INFINITE_CANVAS_H = 4000;
+export const INFINITE_CANVAS_W = 2400;
+export const INFINITE_CANVAS_H = 1800;
 
 export const EMPTY_PAGE_BACKGROUND: PageBackground = {
   dataUrl: null,

@@ -67,8 +67,8 @@ describe("editorDocument", () => {
 
     expect(normalized.kind).toBe("infinite");
     expect(normalized.board).toEqual({
-      width: 6000,
-      height: 4000,
+      width: 2400,
+      height: 1800,
       backgroundStyle: "grid",
     });
     expect(normalized.pages).toEqual([[]]);
@@ -87,6 +87,7 @@ describe("editorDocument", () => {
               { x: 1, y: 2 },
               { x: 3, y: 4 },
             ],
+            segmentBBoxes: [{ minX: 1, minY: 2, maxX: 3, maxY: 4 }],
             d: "M 1 2 L 3 4",
             w: 5,
             c: "#111111",

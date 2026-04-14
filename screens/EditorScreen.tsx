@@ -38,6 +38,11 @@ import { EMPTY_PAGE_BACKGROUND } from "@/lib/editorTypes";
 import { Platform, Pressable, Text, TextInput, View } from "react-native";
 import { Gesture } from "react-native-gesture-handler";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+} from "react-native-reanimated";
 
 // Theme
 const WORKSPACE_BG = STUDIO.bg;
@@ -87,7 +92,28 @@ const INFINITE_EDGE_TRIGGER = 220;
 const INFINITE_EXPAND_X = 1200;
 const INFINITE_EXPAND_Y = 900;
 const EMPTY_SELECTED_SET = new Set<string>();
+const ZERO_SELECTION_OFFSET = { dx: 0, dy: 0 };
 const DEFAULT_GRID_STEP = 28;
+
+type PerfSnapshot = {
+  strokeCount: number;
+  pointCount: number;
+  frameDurationMs: number;
+  eraseBatchSize: number;
+  eraseCandidateCount: number;
+  dirtyRectArea: number;
+  activePageRenders: number;
+};
+
+const INITIAL_PERF_SNAPSHOT: PerfSnapshot = {
+  strokeCount: 0,
+  pointCount: 0,
+  frameDurationMs: 0,
+  eraseBatchSize: 0,
+  eraseCandidateCount: 0,
+  dirtyRectArea: 0,
+  activePageRenders: 0,
+};
 
 function clamp(n: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, n));
@@ -157,15 +183,25 @@ export default function EditorScreen() {
   const hasInitializedToolbarPos = useRef(false);
 
   const toolbarPosRef = useRef(toolbarPos);
+  const toolbarPosX = useSharedValue(toolbarPos.x);
+  const toolbarPosY = useSharedValue(toolbarPos.y);
+  const toolbarMinX = useSharedValue(0);
+  const toolbarMaxX = useSharedValue(0);
+  const toolbarMinY = useSharedValue(toolbarMinTop);
+  const toolbarMaxY = useSharedValue(toolbarMinTop);
+  const toolbarDragStartX = useSharedValue(toolbarPos.x);
+  const toolbarDragStartY = useSharedValue(toolbarPos.y);
+  const toolbarMoved = useSharedValue(false);
   useEffect(() => {
     toolbarPosRef.current = toolbarPos;
-  }, [toolbarPos]);
+    toolbarPosX.value = toolbarPos.x;
+    toolbarPosY.value = toolbarPos.y;
+    toolbarDragStartX.value = toolbarPos.x;
+    toolbarDragStartY.value = toolbarPos.y;
+  }, [toolbarDragStartX, toolbarDragStartY, toolbarPos, toolbarPosX, toolbarPosY]);
 
   // double-tap on the 3-dot handle
   const lastHandleTapMs = useRef<number>(0);
-  const movedDuringDrag = useRef(false);
-  const toolbarDragStart = useRef<{ x: number; y: number } | null>(null);
-
   // Tool sizes (separate pen/eraser)
   const [penSizeIndex, setPenSizeIndex] = useState(0);
   const [highlighterSizeIndex, setHighlighterSizeIndex] = useState(2);
@@ -306,6 +342,10 @@ export default function EditorScreen() {
     emptyBackground: EMPTY_PAGE_BACKGROUND,
   });
   const canvasSizeRef = useRef(canvasSize);
+  const perfRef = useRef<PerfSnapshot>(INITIAL_PERF_SNAPSHOT);
+  const [perfSnapshot, setPerfSnapshot] = useState<PerfSnapshot>(
+    INITIAL_PERF_SNAPSHOT,
+  );
 
   // ---- Toolbar constraints
   const clampToolbarPos = (x: number, y: number) => {
@@ -316,6 +356,46 @@ export default function EditorScreen() {
       y: clamp(y, toolbarMinTop, maxY),
     };
   };
+  useEffect(() => {
+    toolbarMinX.value = 0;
+    toolbarMaxX.value = Math.max(0, containerSize.w - toolbarSize.w);
+    toolbarMinY.value = toolbarMinTop;
+    toolbarMaxY.value = Math.max(
+      toolbarMinTop,
+      containerSize.h - toolbarSize.h - insets.bottom,
+    );
+  }, [
+    containerSize.h,
+    containerSize.w,
+    insets.bottom,
+    toolbarMaxX,
+    toolbarMaxY,
+    toolbarMinTop,
+    toolbarMinX,
+    toolbarMinY,
+    toolbarSize.h,
+    toolbarSize.w,
+  ]);
+
+  const commitToolbarPos = useCallback((x: number, y: number) => {
+    const next = clampToolbarPos(x, y);
+    toolbarPosRef.current = next;
+    setToolbarPos(next);
+  }, [containerSize.h, containerSize.w, insets.bottom, toolbarMinTop, toolbarSize.h, toolbarSize.w]);
+
+  const handleToolbarDragEnd = useCallback(
+    (x: number, y: number, moved: boolean) => {
+      commitToolbarPos(x, y);
+      if (!moved) {
+        const now = Date.now();
+        if (now - lastHandleTapMs.current < 280) {
+          setIsToolbarModeOpen(true);
+        }
+        lastHandleTapMs.current = now;
+      }
+    },
+    [commitToolbarPos],
+  );
 
   // When orientation changes, size changes -> keep toolbar in view
   useEffect(() => {
@@ -348,38 +428,106 @@ export default function EditorScreen() {
   const toolbarHandleGesture = useMemo(
     () =>
       Gesture.Pan()
-        .runOnJS(true)
         .minDistance(0)
         .onStart(() => {
-          movedDuringDrag.current = false;
-          toolbarDragStart.current = toolbarPosRef.current;
+          "worklet";
+          toolbarMoved.value = false;
+          toolbarDragStartX.value = toolbarPosX.value;
+          toolbarDragStartY.value = toolbarPosY.value;
         })
         .onUpdate((event) => {
+          "worklet";
           if (Math.abs(event.translationX) + Math.abs(event.translationY) > 3) {
-            movedDuringDrag.current = true;
+            toolbarMoved.value = true;
           }
 
-          const base = toolbarDragStart.current ?? toolbarPosRef.current;
-          const next = clampToolbarPos(
-            base.x + event.translationX,
-            base.y + event.translationY,
+          const nextX = Math.max(
+            toolbarMinX.value,
+            Math.min(toolbarMaxX.value, toolbarDragStartX.value + event.translationX),
           );
-          setToolbarPos(next);
+          const nextY = Math.max(
+            toolbarMinY.value,
+            Math.min(toolbarMaxY.value, toolbarDragStartY.value + event.translationY),
+          );
+          toolbarPosX.value = nextX;
+          toolbarPosY.value = nextY;
         })
         .onEnd(() => {
-          if (!movedDuringDrag.current) {
-            const now = Date.now();
-            if (now - lastHandleTapMs.current < 280) {
-              setIsToolbarModeOpen(true);
-            }
-            lastHandleTapMs.current = now;
-          }
-          toolbarDragStart.current = null;
+          "worklet";
+          runOnJS(handleToolbarDragEnd)(
+            toolbarPosX.value,
+            toolbarPosY.value,
+            toolbarMoved.value,
+          );
         })
         .onFinalize(() => {
-          toolbarDragStart.current = null;
+          "worklet";
+          toolbarMoved.value = false;
         }),
-    [containerSize.h, containerSize.w, toolbarSize.h, toolbarSize.w],
+    [
+      handleToolbarDragEnd,
+      toolbarDragStartX,
+      toolbarDragStartY,
+      toolbarMaxX,
+      toolbarMaxY,
+      toolbarMinX,
+      toolbarMinY,
+      toolbarMoved,
+      toolbarPosX,
+      toolbarPosY,
+    ],
+  );
+
+  const floatingToolbarStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: toolbarPosX.value - toolbarPos.x },
+      { translateY: toolbarPosY.value - toolbarPos.y },
+    ],
+  }), [toolbarPos.x, toolbarPos.y]);
+
+  const handlePerfEvent = useCallback(
+    (
+      event:
+        | { type: "eraseBatch"; batchSize: number }
+        | { type: "interaction"; active: boolean }
+        | { type: "dirtyRect"; area: number }
+        | { type: "eraseCandidates"; count: number },
+    ) => {
+      if (event.type === "eraseBatch") {
+        perfRef.current = {
+          ...perfRef.current,
+          eraseBatchSize: event.batchSize,
+        };
+        return;
+      }
+
+      if (event.type === "eraseCandidates") {
+        perfRef.current = {
+          ...perfRef.current,
+          eraseCandidateCount: event.count,
+        };
+        return;
+      }
+
+      if (event.type === "dirtyRect") {
+        perfRef.current = {
+          ...perfRef.current,
+          dirtyRectArea: event.area,
+        };
+        return;
+      }
+
+      if (event.active) {
+        perfRef.current = {
+          ...perfRef.current,
+          activePageRenders: 0,
+          eraseBatchSize: 0,
+          eraseCandidateCount: 0,
+          dirtyRectArea: 0,
+        };
+      }
+    },
+    [],
   );
 
   const {
@@ -390,6 +538,10 @@ export default function EditorScreen() {
     selectedSet,
     selectionPreviewOffset,
     selectionBounds,
+    isInteracting,
+    livePreviewStateRef,
+    nativeStrokePreview,
+    acknowledgeActivePageRender,
     isPointerDown,
     pageHandlersByPage,
     deleteSelection,
@@ -435,7 +587,9 @@ export default function EditorScreen() {
       setTextDraft("");
       setTool("text");
     },
+    zoom,
     zoomRef,
+    canvasSize,
     canvasSizeRef,
     isInfiniteCanvas,
     setBoardSize,
@@ -445,7 +599,16 @@ export default function EditorScreen() {
     infiniteEdgeTrigger: INFINITE_EDGE_TRIGGER,
     infiniteExpandX: INFINITE_EXPAND_X,
     infiniteExpandY: INFINITE_EXPAND_Y,
+    onPerfEvent: handlePerfEvent,
   });
+
+  const handleActivePageRender = useCallback((renderedStrokes: typeof strokes) => {
+    perfRef.current = {
+      ...perfRef.current,
+      activePageRenders: perfRef.current.activePageRenders + 1,
+    };
+    acknowledgeActivePageRender(renderedStrokes);
+  }, [acknowledgeActivePageRender]);
 
   const {
     saveState,
@@ -474,6 +637,53 @@ export default function EditorScreen() {
     setMetadata,
     loadSnapshot,
   });
+  const isAndroidInteractionMode =
+    Platform.OS === "android" &&
+    isInteracting &&
+    (tool === "eraser" || tool === "lasso" || tool === "hand");
+  const showTopChrome = !isAndroidInteractionMode;
+
+  useEffect(() => {
+    perfRef.current = {
+      ...perfRef.current,
+      strokeCount: strokes.length,
+      pointCount: strokes.reduce((total, stroke) => total + stroke.points.length, 0),
+    };
+  }, [strokes]);
+
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+
+    let frameId: number | null = null;
+    let publishId: ReturnType<typeof setInterval> | null = null;
+    let lastFrameAt = 0;
+
+    const loop = (timestamp: number) => {
+      if (lastFrameAt > 0) {
+        perfRef.current = {
+          ...perfRef.current,
+          frameDurationMs: timestamp - lastFrameAt,
+        };
+      }
+      lastFrameAt = timestamp;
+      frameId = requestAnimationFrame(loop);
+    };
+
+    if (isInteracting) {
+      frameId = requestAnimationFrame(loop);
+      publishId = setInterval(() => {
+        setPerfSnapshot({ ...perfRef.current });
+      }, 250);
+    } else {
+      setPerfSnapshot({ ...perfRef.current });
+    }
+
+    return () => {
+      if (frameId != null) cancelAnimationFrame(frameId);
+      if (publishId != null) clearInterval(publishId);
+    };
+  }, [isInteracting]);
+
   const handPanRef = useRef<{
     active: boolean;
     x: number;
@@ -914,244 +1124,280 @@ export default function EditorScreen() {
           backgroundColor: "rgba(35,52,70,0.08)",
         }}
       />
-      <Pressable
-        onPress={() => {
-          router.push("/(tabs)/explore");
-        }}
-        onLayout={(e) => {
-          setBackButtonWidth(e.nativeEvent.layout.width);
-        }}
-        style={{
-          position: "absolute",
-          left: BACK_BUTTON_LEFT,
-          top: topChromeTop,
-          zIndex: 70,
-          height: 42,
-          paddingHorizontal: 16,
-          borderRadius: 18,
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 8,
-          backgroundColor: "rgba(255,249,241,0.84)",
-          borderWidth: 1,
-          borderColor: TOPBAR_BORDER,
-          shadowColor: "#000",
-          shadowOpacity: 0.08,
-          shadowRadius: 14,
-          shadowOffset: { width: 0, height: 8 },
-          boxShadow: "0 12px 28px rgba(56,42,26,0.12)",
-          backdropFilter: "blur(12px)",
-        }}
-      >
-        <ChevronLeft size={18} color={STUDIO.ink} />
-        <View>
-          <Text style={{ color: STUDIO.accentWarm, fontSize: 10, fontWeight: "900", letterSpacing: 0.8, textTransform: "uppercase" }}>Library</Text>
-          <Text style={{ color: STUDIO.ink, fontWeight: "900" }}>Back</Text>
-        </View>
-      </Pressable>
+      {showTopChrome ? (
+        <>
+          <Pressable
+            onPress={() => {
+              router.push("/(tabs)/explore");
+            }}
+            onLayout={(e) => {
+              setBackButtonWidth(e.nativeEvent.layout.width);
+            }}
+            style={{
+              position: "absolute",
+              left: BACK_BUTTON_LEFT,
+              top: topChromeTop,
+              zIndex: 70,
+              height: 42,
+              paddingHorizontal: 16,
+              borderRadius: 18,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 8,
+              backgroundColor: "rgba(255,249,241,0.84)",
+              borderWidth: 1,
+              borderColor: TOPBAR_BORDER,
+              shadowColor: "#000",
+              shadowOpacity: 0.08,
+              shadowRadius: 14,
+              shadowOffset: { width: 0, height: 8 },
+              boxShadow: "0 12px 28px rgba(56,42,26,0.12)",
+              backdropFilter: "blur(12px)",
+            }}
+          >
+            <ChevronLeft size={18} color={STUDIO.ink} />
+            <View>
+              <Text style={{ color: STUDIO.accentWarm, fontSize: 10, fontWeight: "900", letterSpacing: 0.8, textTransform: "uppercase" }}>Library</Text>
+              <Text style={{ color: STUDIO.ink, fontWeight: "900" }}>Back</Text>
+            </View>
+          </Pressable>
 
-      <Pressable
-        onPress={() => {
-          if (recoveredFromDraft) {
-            dismissRecoveredFromDraft();
-            return;
-          }
-          if (saveState === "error") {
-            retrySave();
-          }
-        }}
-        disabled={!recoveredFromDraft && saveState !== "error"}
-        style={{
-          position: "absolute",
-          right: 14,
-          top: topChromeTop,
-          zIndex: 70,
-          minHeight: 42,
-          maxWidth: 240,
-          paddingHorizontal: 14,
-          paddingVertical: 10,
-          borderRadius: 18,
-          justifyContent: "center",
-          backgroundColor:
-            saveState === "error"
-              ? "rgba(156,67,52,0.96)"
-              : recoveredFromDraft
-                ? "rgba(154,92,55,0.94)"
-                : "rgba(255,249,241,0.84)",
-          borderWidth: 1,
-          borderColor:
-            saveState === "error"
-                ? "rgba(127,29,29,0.22)"
-                : recoveredFromDraft
-                  ? "rgba(146,64,14,0.16)"
-                : TOPBAR_BORDER,
-          shadowColor: "#000",
-          shadowOpacity: 0.08,
-          shadowRadius: 14,
-          shadowOffset: { width: 0, height: 8 },
-          boxShadow: "0 12px 28px rgba(56,42,26,0.12)",
-          backdropFilter: "blur(12px)",
-        }}
-      >
-        <Text
-          style={{
-            color:
-              saveState === "error" ? "#FFF8F3" : recoveredFromDraft ? "#7C2D12" : STUDIO.ink,
-            fontWeight: "900",
-            fontSize: 12,
-          }}
-        >
-          {formatSaveLabel(saveState, recoveredFromDraft)}
-        </Text>
-        {saveState === "error" && saveError ? (
-          <Text style={{ color: "rgba(255,255,255,0.92)", marginTop: 2, fontSize: 11 }}>
-            Tap to retry
-          </Text>
-        ) : recoveredFromDraft ? (
-          <Text style={{ color: "#92400E", marginTop: 2, fontSize: 11 }}>
-            Tap to dismiss
-          </Text>
-        ) : null}
-      </Pressable>
+          <Pressable
+            onPress={() => {
+              if (recoveredFromDraft) {
+                dismissRecoveredFromDraft();
+                return;
+              }
+              if (saveState === "error") {
+                retrySave();
+              }
+            }}
+            disabled={!recoveredFromDraft && saveState !== "error"}
+            style={{
+              position: "absolute",
+              right: 14,
+              top: topChromeTop,
+              zIndex: 70,
+              minHeight: 42,
+              maxWidth: 240,
+              paddingHorizontal: 14,
+              paddingVertical: 10,
+              borderRadius: 18,
+              justifyContent: "center",
+              backgroundColor:
+                saveState === "error"
+                  ? "rgba(156,67,52,0.96)"
+                  : recoveredFromDraft
+                    ? "rgba(154,92,55,0.94)"
+                    : "rgba(255,249,241,0.84)",
+              borderWidth: 1,
+              borderColor:
+                saveState === "error"
+                  ? "rgba(127,29,29,0.22)"
+                  : recoveredFromDraft
+                    ? "rgba(146,64,14,0.16)"
+                    : TOPBAR_BORDER,
+              shadowColor: "#000",
+              shadowOpacity: 0.08,
+              shadowRadius: 14,
+              shadowOffset: { width: 0, height: 8 },
+              boxShadow: "0 12px 28px rgba(56,42,26,0.12)",
+              backdropFilter: "blur(12px)",
+            }}
+          >
+            <Text
+              style={{
+                color:
+                  saveState === "error" ? "#FFF8F3" : recoveredFromDraft ? "#7C2D12" : STUDIO.ink,
+                fontWeight: "900",
+                fontSize: 12,
+              }}
+            >
+              {formatSaveLabel(saveState, recoveredFromDraft)}
+            </Text>
+            {saveState === "error" && saveError ? (
+              <Text style={{ color: "rgba(255,255,255,0.92)", marginTop: 2, fontSize: 11 }}>
+                Tap to retry
+              </Text>
+            ) : recoveredFromDraft ? (
+              <Text style={{ color: "#92400E", marginTop: 2, fontSize: 11 }}>
+                Tap to dismiss
+              </Text>
+            ) : null}
+          </Pressable>
 
-      {exportFeedback.message ? (
+          {exportFeedback.message ? (
+            <View
+              style={{
+                position: "absolute",
+                right: 14,
+                top: topChromeTop + 58,
+                zIndex: 70,
+                maxWidth: 260,
+                paddingHorizontal: 14,
+                paddingVertical: 10,
+                borderRadius: 18,
+                backgroundColor:
+                  exportFeedback.tone === "error"
+                    ? "rgba(156,67,52,0.94)"
+                    : "rgba(62,107,76,0.92)",
+                borderWidth: 1,
+                borderColor:
+                  exportFeedback.tone === "error"
+                    ? "rgba(127,29,29,0.26)"
+                    : "rgba(21,128,61,0.24)",
+              }}
+            >
+              <Text style={{ color: "#fff", fontWeight: "800", fontSize: 12 }}>
+                {exportFeedback.message}
+              </Text>
+            </View>
+          ) : null}
+
+          <View
+            style={{
+              position: "absolute",
+              right: 14,
+              top: exportFeedback.message ? topChromeTop + 118 : topChromeTop + 58,
+              zIndex: 70,
+              borderRadius: 18,
+              paddingHorizontal: 12,
+              paddingVertical: 10,
+              gap: 8,
+              backgroundColor: "rgba(255,249,241,0.88)",
+              borderWidth: 1,
+              borderColor: TOPBAR_BORDER,
+            }}
+          >
+            <Pressable onPress={() => setSnapToGrid((value) => !value)}>
+              <Text style={{ color: STUDIO.ink, fontWeight: "800", fontSize: 12 }}>
+                Grid snap: {snapToGrid ? "On" : "Off"}
+              </Text>
+            </Pressable>
+            <Pressable onPress={() => setShapeSnapEnabled((value) => !value)}>
+              <Text style={{ color: STUDIO.ink, fontWeight: "800", fontSize: 12 }}>
+                Shape snap: {shapeSnapEnabled ? "On" : "Off"}
+              </Text>
+            </Pressable>
+          </View>
+
+          <FloatingToolbar
+            toolbarPos={toolbarPos}
+            floatingStyle={floatingToolbarStyle}
+            toolbarOrientation={toolbarOrientation}
+            penColor={penColor}
+            tool={tool}
+            navLabel={isInfiniteCanvas ? "Board" : "Pages"}
+            navSubLabel={
+              isInfiniteCanvas
+                ? boardBackgroundStyle[0].toUpperCase() +
+                  boardBackgroundStyle.slice(1)
+                : `${currentPageIndex + 1}/${Math.max(1, pages.length)}`
+            }
+            selectedCount={selectedIds.length}
+            zoom={zoom}
+            historyIndex={historyIndex}
+            historyLength={history.length}
+            onToolbarLayout={(size) => {
+              setToolbarSize(size);
+              setToolbarPos((p) => clampToolbarPos(p.x, p.y));
+            }}
+            toolbarHandleGesture={toolbarHandleGesture}
+            onPenPress={() => {
+              if (tool === "pen") {
+                setSizeModalTool("pen");
+                setIsSizeModalOpen(true);
+              } else {
+                setTool("pen");
+                clearPenModeArtifacts();
+              }
+            }}
+            onHighlighterPress={() => {
+              if (tool === "highlighter") {
+                setSizeModalTool("highlighter");
+                setIsSizeModalOpen(true);
+              } else {
+                setTool("highlighter");
+                clearPenModeArtifacts();
+              }
+            }}
+            onShapePress={() => {
+              if (tool === "shape") {
+                setIsShapeModalOpen(true);
+              } else {
+                setTool("shape");
+                clearPenModeArtifacts();
+              }
+            }}
+            onTextPress={() => {
+              setTool("text");
+              clearPenModeArtifacts();
+            }}
+            onEraserPress={() => {
+              if (tool === "eraser") {
+                setSizeModalTool("eraser");
+                setIsSizeModalOpen(true);
+              } else {
+                setTool("eraser");
+                clearEraserModeArtifacts();
+              }
+            }}
+            onLassoPress={() => {
+              setTool("lasso");
+              clearLassoModeArtifacts();
+            }}
+            onHandPress={() => {
+              setTool("hand");
+              clearLassoModeArtifacts();
+            }}
+            onColorPress={() => setIsColorModalOpen(true)}
+            onPagesPress={() =>
+              isInfiniteCanvas
+                ? setIsBoardBackgroundModalOpen(true)
+                : setIsPagesModalOpen(true)
+            }
+            onExportPdf={exportAsPdf}
+            onExportImage={exportAsImage}
+            onZoomOut={() => animateZoomTo(zoom - 0.01)}
+            onZoomReset={() => animateZoomTo(1)}
+            onZoomIn={() => animateZoomTo(zoom + 0.01)}
+            onUndo={undo}
+            onRedo={redo}
+          />
+        </>
+      ) : null}
+
+      {Platform.OS === "android" ? (
         <View
+          pointerEvents="none"
           style={{
             position: "absolute",
-            right: 14,
-            top: topChromeTop + 58,
+            left: 14,
+            bottom: insets.bottom + 12,
             zIndex: 70,
-            maxWidth: 260,
-            paddingHorizontal: 14,
+            borderRadius: 16,
+            paddingHorizontal: 12,
             paddingVertical: 10,
-            borderRadius: 18,
-            backgroundColor:
-              exportFeedback.tone === "error"
-                ? "rgba(156,67,52,0.94)"
-                : "rgba(62,107,76,0.92)",
-            borderWidth: 1,
-            borderColor:
-              exportFeedback.tone === "error"
-                ? "rgba(127,29,29,0.26)"
-                : "rgba(21,128,61,0.24)",
+            backgroundColor: "rgba(35,52,70,0.88)",
           }}
         >
-          <Text style={{ color: "#fff", fontWeight: "800", fontSize: 12 }}>
-            {exportFeedback.message}
+          <Text style={{ color: "#FFF9F2", fontSize: 10, fontWeight: "900", letterSpacing: 0.8, textTransform: "uppercase" }}>
+            Perf
+          </Text>
+          <Text style={{ color: "#FFF9F2", fontSize: 11, marginTop: 4 }}>
+            {`strokes ${perfSnapshot.strokeCount}  points ${perfSnapshot.pointCount}`}
+          </Text>
+          <Text style={{ color: "#FFF9F2", fontSize: 11, marginTop: 2 }}>
+            {`frame ${perfSnapshot.frameDurationMs.toFixed(1)}ms  erase ${perfSnapshot.eraseBatchSize}`}
+          </Text>
+          <Text style={{ color: "#FFF9F2", fontSize: 11, marginTop: 2 }}>
+            {`candidates ${perfSnapshot.eraseCandidateCount}  dirty ${Math.round(perfSnapshot.dirtyRectArea)}`}
+          </Text>
+          <Text style={{ color: "#FFF9F2", fontSize: 11, marginTop: 2 }}>
+            {`active renders ${perfSnapshot.activePageRenders}  mode ${isAndroidInteractionMode ? "interaction" : "idle"}`}
           </Text>
         </View>
       ) : null}
-
-      <View
-        style={{
-          position: "absolute",
-          right: 14,
-          top: exportFeedback.message ? topChromeTop + 118 : topChromeTop + 58,
-          zIndex: 70,
-          borderRadius: 18,
-          paddingHorizontal: 12,
-          paddingVertical: 10,
-          gap: 8,
-          backgroundColor: "rgba(255,249,241,0.88)",
-          borderWidth: 1,
-          borderColor: TOPBAR_BORDER,
-        }}
-      >
-        <Pressable onPress={() => setSnapToGrid((value) => !value)}>
-          <Text style={{ color: STUDIO.ink, fontWeight: "800", fontSize: 12 }}>
-            Grid snap: {snapToGrid ? "On" : "Off"}
-          </Text>
-        </Pressable>
-        <Pressable onPress={() => setShapeSnapEnabled((value) => !value)}>
-          <Text style={{ color: STUDIO.ink, fontWeight: "800", fontSize: 12 }}>
-            Shape snap: {shapeSnapEnabled ? "On" : "Off"}
-          </Text>
-        </Pressable>
-      </View>
-
-      {/* Floating, draggable toolbar */}
-      <FloatingToolbar
-        toolbarPos={toolbarPos}
-        toolbarOrientation={toolbarOrientation}
-        penColor={penColor}
-        tool={tool}
-        navLabel={isInfiniteCanvas ? "Board" : "Pages"}
-        navSubLabel={
-          isInfiniteCanvas
-            ? boardBackgroundStyle[0].toUpperCase() +
-              boardBackgroundStyle.slice(1)
-            : `${currentPageIndex + 1}/${Math.max(1, pages.length)}`
-        }
-        selectedCount={selectedIds.length}
-        zoom={zoom}
-        historyIndex={historyIndex}
-        historyLength={history.length}
-        onToolbarLayout={(size) => {
-          setToolbarSize(size);
-          setToolbarPos((p) => clampToolbarPos(p.x, p.y));
-        }}
-        toolbarHandleGesture={toolbarHandleGesture}
-        onPenPress={() => {
-          if (tool === "pen") {
-            setSizeModalTool("pen");
-            setIsSizeModalOpen(true);
-          } else {
-            setTool("pen");
-            clearPenModeArtifacts();
-          }
-        }}
-        onHighlighterPress={() => {
-          if (tool === "highlighter") {
-            setSizeModalTool("highlighter");
-            setIsSizeModalOpen(true);
-          } else {
-            setTool("highlighter");
-            clearPenModeArtifacts();
-          }
-        }}
-        onShapePress={() => {
-          if (tool === "shape") {
-            setIsShapeModalOpen(true);
-          } else {
-            setTool("shape");
-            clearPenModeArtifacts();
-          }
-        }}
-        onTextPress={() => {
-          setTool("text");
-          clearPenModeArtifacts();
-        }}
-        onEraserPress={() => {
-          if (tool === "eraser") {
-            setSizeModalTool("eraser");
-            setIsSizeModalOpen(true);
-          } else {
-            setTool("eraser");
-            clearEraserModeArtifacts();
-          }
-        }}
-        onLassoPress={() => {
-          setTool("lasso");
-          clearLassoModeArtifacts();
-        }}
-        onHandPress={() => {
-          setTool("hand");
-          clearLassoModeArtifacts();
-        }}
-        onColorPress={() => setIsColorModalOpen(true)}
-        onPagesPress={() =>
-          isInfiniteCanvas
-            ? setIsBoardBackgroundModalOpen(true)
-            : setIsPagesModalOpen(true)
-        }
-        onExportPdf={exportAsPdf}
-        onExportImage={exportAsImage}
-        onZoomOut={() => animateZoomTo(zoom - 0.01)}
-        onZoomReset={() => animateZoomTo(1)}
-        onZoomIn={() => animateZoomTo(zoom + 0.01)}
-        onUndo={undo}
-        onRedo={redo}
-      />
 
       {/* Workspace */}
       <View
@@ -1211,10 +1457,12 @@ export default function EditorScreen() {
                 textItems={textItems}
                 selectedSet={pageIsActive ? selectedSet : EMPTY_SELECTED_SET}
                 selectionPreviewOffset={
-                  pageIsActive ? selectionPreviewOffset : { dx: 0, dy: 0 }
+                  pageIsActive ? selectionPreviewOffset : ZERO_SELECTION_OFFSET
                 }
                 selectionBounds={pageIsActive ? selectionBounds : null}
-                selectionMenu={pageIsActive ? selectionMenu : null}
+                selectionMenu={
+                  pageIsActive && !isAndroidInteractionMode ? selectionMenu : null
+                }
                 currentPath={pageIsActive ? currentPath : ""}
                 activeColor={activeColor}
                 activeWidth={activeWidth}
@@ -1237,6 +1485,10 @@ export default function EditorScreen() {
                 }}
                 onAxisRotate={rotateAxisToPoint}
                 onAxisRotateEnd={endAxisRotation}
+                hideInteractiveOverlays={isAndroidInteractionMode}
+                onActivePageRender={handleActivePageRender}
+                livePreviewStateRef={livePreviewStateRef}
+                nativeStrokePreview={nativeStrokePreview}
               />
             );
           })}

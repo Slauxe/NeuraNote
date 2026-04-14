@@ -13,6 +13,11 @@ import Svg, { Circle, G, Path, Rect } from "react-native-svg";
 
 import PdfPageBackground from "../PdfPageBackground";
 import { STUDIO } from "@/components/studio/StudioPrimitives";
+import type {
+  LivePreviewState,
+  NativeStrokePreviewState,
+} from "@/hooks/useCanvasInteractions";
+import { pointsToSmoothPath } from "@/lib/editorGeometry";
 import { getBackgroundAsset } from "@/lib/webBackgroundAssets";
 import {
   INFINITE_CANVAS_H,
@@ -34,6 +39,8 @@ const IS_WEB = Platform.OS === "web";
 const DASH_INTERVALS = [6, 6];
 const PAGE_BG = "#FFFDF8";
 const PAGE_BORDER = "rgba(71,51,33,0.16)";
+const NATIVE_CANVAS_AREA_LIMIT = 4_000_000;
+const NATIVE_LIVE_OVERLAY_AREA_LIMIT = 5_500_000;
 
 function getEventScreenPoint(event: any) {
   const native = event?.nativeEvent ?? event;
@@ -42,6 +49,10 @@ function getEventScreenPoint(event: any) {
 
   if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
   return { x: Number(x), y: Number(y) };
+}
+
+function widthHeightArea(width: number, height: number) {
+  return Math.max(0, width) * Math.max(0, height);
 }
 
 const TextItemOverlay = React.memo(function TextItemOverlay({
@@ -552,6 +563,7 @@ const StaticStrokeSurface = React.memo(
     showSelection,
     selectedSet,
     selectionPreviewOffset,
+    preferSvg = false,
   }: {
     width: number;
     height: number;
@@ -559,8 +571,9 @@ const StaticStrokeSurface = React.memo(
     showSelection: boolean;
     selectedSet: Set<string>;
     selectionPreviewOffset?: { dx: number; dy: number };
+    preferSvg?: boolean;
   }) {
-    if (IS_WEB) {
+    if (IS_WEB || preferSvg) {
       return (
         <Svg
           width={width}
@@ -608,6 +621,231 @@ const StaticStrokeSurface = React.memo(
     prev.selectionPreviewOffset === next.selectionPreviewOffset,
 );
 
+const CommittedPageLayer = React.memo(
+  function CommittedPageLayer({
+    zoom,
+    noteKind,
+    pageWidth,
+    pageHeight,
+    boardBackgroundStyle,
+    pageTemplate,
+    pageBackground,
+    renderStrokes,
+    textItems,
+    pageIsActive,
+    selectedSet,
+    selectionPreviewOffset,
+    hideInteractiveOverlays,
+    textMoveEnabled,
+    onMoveTextItem,
+  }: {
+    zoom: number;
+    noteKind: NoteKind;
+    pageWidth: number;
+    pageHeight: number;
+    boardBackgroundStyle: InfiniteBoardBackgroundStyle;
+    pageTemplate: PageTemplate;
+    pageBackground: PageBackground;
+    renderStrokes: Stroke[];
+    textItems: NoteTextItem[];
+    pageIsActive: boolean;
+    selectedSet: Set<string>;
+    selectionPreviewOffset: { dx: number; dy: number };
+    hideInteractiveOverlays: boolean;
+    textMoveEnabled: boolean;
+    onMoveTextItem?: (itemId: string, point: Point) => void;
+  }) {
+    const isInfiniteCanvas = noteKind === "infinite";
+    const preferSvgSurface =
+      isInfiniteCanvas || widthHeightArea(pageWidth, pageHeight) > NATIVE_CANVAS_AREA_LIMIT;
+    const showBoardPattern =
+      isInfiniteCanvas &&
+      !pageBackground.dataUrl &&
+      !pageBackground.assetId &&
+      !pageBackground.pdfUri &&
+      pageWidth >= INFINITE_CANVAS_W &&
+      pageHeight >= INFINITE_CANVAS_H;
+    const resolvedBackgroundUrl = useResolvedBackgroundUrl(pageBackground);
+
+    const boardPatternStyle =
+      boardBackgroundStyle === "blank"
+        ? null
+        : boardBackgroundStyle === "dots"
+          ? ({
+              position: "absolute",
+              inset: 0,
+              backgroundColor: "#F2EBE1",
+              backgroundImage:
+                "radial-gradient(circle, rgba(154,92,55,0.18) 1.1px, transparent 1.4px)",
+              backgroundSize: "24px 24px",
+              backgroundPosition: "12px 12px",
+            } as any)
+          : ({
+              position: "absolute",
+              inset: 0,
+              backgroundColor: "#F2EBE1",
+              backgroundImage: [
+                "linear-gradient(rgba(124,102,79,0.10) 1px, transparent 1px)",
+                "linear-gradient(90deg, rgba(124,102,79,0.10) 1px, transparent 1px)",
+                "linear-gradient(rgba(154,92,55,0.07) 1px, transparent 1px)",
+                "linear-gradient(90deg, rgba(154,92,55,0.07) 1px, transparent 1px)",
+              ].join(", "),
+              backgroundSize: "30px 30px, 30px 30px, 150px 150px, 150px 150px",
+            } as any);
+    const pageTemplateStyle =
+      pageTemplate === "ruled"
+        ? ({
+            position: "absolute",
+            inset: 0,
+            backgroundColor: PAGE_BG,
+            backgroundImage:
+              "linear-gradient(transparent 31px, rgba(35,52,70,0.10) 32px)",
+            backgroundSize: "100% 32px",
+          } as any)
+        : pageTemplate === "dots"
+          ? ({
+              position: "absolute",
+              inset: 0,
+              backgroundColor: PAGE_BG,
+              backgroundImage:
+                "radial-gradient(circle, rgba(154,92,55,0.18) 1px, transparent 1.3px)",
+              backgroundSize: "22px 22px",
+              backgroundPosition: "11px 11px",
+            } as any)
+          : pageTemplate === "grid" || pageTemplate === "graph-coarse"
+            ? ({
+                position: "absolute",
+                inset: 0,
+                backgroundColor: PAGE_BG,
+                backgroundImage: [
+                  "linear-gradient(rgba(124,102,79,0.10) 1px, transparent 1px)",
+                  "linear-gradient(90deg, rgba(124,102,79,0.10) 1px, transparent 1px)",
+                ].join(", "),
+                backgroundSize:
+                  pageTemplate === "graph-coarse"
+                    ? "32px 32px, 32px 32px"
+                    : "28px 28px, 28px 28px",
+              } as any)
+            : pageTemplate === "graph-fine"
+              ? ({
+                  position: "absolute",
+                  inset: 0,
+                  backgroundColor: PAGE_BG,
+                  backgroundImage: [
+                    "linear-gradient(rgba(124,102,79,0.09) 1px, transparent 1px)",
+                    "linear-gradient(90deg, rgba(124,102,79,0.09) 1px, transparent 1px)",
+                  ].join(", "),
+                  backgroundSize: "20px 20px, 20px 20px",
+                } as any)
+              : pageTemplate === "polar"
+                ? ({
+                    position: "absolute",
+                    inset: 0,
+                    backgroundColor: PAGE_BG,
+                    backgroundImage:
+                      "radial-gradient(circle at center, rgba(124,102,79,0.10) 1px, transparent 1px), repeating-radial-gradient(circle at center, transparent 0 39px, rgba(124,102,79,0.10) 39px 40px), repeating-conic-gradient(from 0deg, rgba(124,102,79,0.10) 0deg 1deg, transparent 1deg 15deg)",
+                  } as any)
+                : pageTemplate === "isometric"
+                  ? ({
+                      position: "absolute",
+                      inset: 0,
+                      backgroundColor: PAGE_BG,
+                      backgroundImage: [
+                        "linear-gradient(30deg, rgba(124,102,79,0.10) 1px, transparent 1px)",
+                        "linear-gradient(150deg, rgba(124,102,79,0.10) 1px, transparent 1px)",
+                        "linear-gradient(90deg, rgba(124,102,79,0.06) 1px, transparent 1px)",
+                      ].join(", "),
+                      backgroundSize: "28px 28px, 28px 28px, 28px 28px",
+                    } as any)
+                  : null;
+
+    return (
+      <>
+        <View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            width: pageWidth,
+            height: pageHeight,
+            zIndex: 0,
+            backgroundColor: isInfiniteCanvas ? "#F5EFE6" : undefined,
+          }}
+        >
+          {showBoardPattern && boardPatternStyle ? (
+            <View style={boardPatternStyle} />
+          ) : null}
+          {!isInfiniteCanvas && pageTemplateStyle ? (
+            <View style={pageTemplateStyle} />
+          ) : null}
+          {resolvedBackgroundUrl ? (
+            <Image
+              source={{ uri: resolvedBackgroundUrl }}
+              style={{
+                position: "absolute",
+                left: 0,
+                top: 0,
+                width: pageWidth,
+                height: pageHeight,
+              }}
+              resizeMode="cover"
+            />
+          ) : null}
+          {!resolvedBackgroundUrl &&
+          pageBackground.pdfUri &&
+          pageBackground.pdfPageNumber ? (
+            <PdfPageBackground
+              uri={pageBackground.pdfUri}
+              pageNumber={pageBackground.pdfPageNumber}
+              width={pageWidth}
+              height={pageHeight}
+            />
+          ) : null}
+        </View>
+
+        <StaticStrokeSurface
+          width={pageWidth}
+          height={pageHeight}
+          strokes={renderStrokes}
+          showSelection={pageIsActive && !hideInteractiveOverlays}
+          selectedSet={selectedSet}
+          selectionPreviewOffset={selectionPreviewOffset}
+          preferSvg={preferSvgSurface}
+        />
+
+        {textItems.map((item) => (
+          <TextItemOverlay
+            key={item.id}
+            item={item}
+            zoom={zoom}
+            pageWidth={pageWidth}
+            pageHeight={pageHeight}
+            canDrag={pageIsActive && textMoveEnabled}
+            onMove={onMoveTextItem}
+          />
+        ))}
+      </>
+    );
+  },
+  (prev, next) =>
+    prev.zoom === next.zoom &&
+    prev.noteKind === next.noteKind &&
+    prev.pageWidth === next.pageWidth &&
+    prev.pageHeight === next.pageHeight &&
+    prev.boardBackgroundStyle === next.boardBackgroundStyle &&
+    prev.pageTemplate === next.pageTemplate &&
+    prev.pageBackground === next.pageBackground &&
+    prev.renderStrokes === next.renderStrokes &&
+    prev.textItems === next.textItems &&
+    prev.pageIsActive === next.pageIsActive &&
+    prev.selectedSet === next.selectedSet &&
+    prev.selectionPreviewOffset === next.selectionPreviewOffset &&
+    prev.hideInteractiveOverlays === next.hideInteractiveOverlays &&
+    prev.textMoveEnabled === next.textMoveEnabled &&
+    prev.onMoveTextItem === next.onMoveTextItem,
+);
+
 const LiveOverlay = React.memo(
   function LiveOverlay({
     width,
@@ -621,6 +859,8 @@ const LiveOverlay = React.memo(
     tool,
     eraserCursor,
     eraserRadius,
+    preferSvg = false,
+    nativeStrokePreview,
   }: {
     width: number;
     height: number;
@@ -633,15 +873,50 @@ const LiveOverlay = React.memo(
     tool: "pen" | "highlighter" | "shape" | "text" | "eraser" | "lasso" | "hand";
     eraserCursor: Point | null;
     eraserRadius: number;
+    preferSvg?: boolean;
+    nativeStrokePreview?: NativeStrokePreviewState;
   }) {
+    const [nativeSvgPath, setNativeSvgPath] = useState("");
+
+    useEffect(() => {
+      if (IS_WEB || !preferSvg || !nativeStrokePreview) return;
+
+      let frameId: number | null = null;
+      let lastSignature = "";
+
+      const tick = () => {
+        const points = nativeStrokePreview.points.value;
+        const visible = nativeStrokePreview.visible.value;
+        const signature = `${visible ? 1 : 0}:${points.length}`;
+
+        if (signature !== lastSignature) {
+          lastSignature = signature;
+          setNativeSvgPath(
+            visible && points.length > 0 ? pointsToSmoothPath(points) : "",
+          );
+        }
+
+        frameId = requestAnimationFrame(tick);
+      };
+
+      frameId = requestAnimationFrame(tick);
+      return () => {
+        if (frameId != null) cancelAnimationFrame(frameId);
+        setNativeSvgPath("");
+      };
+    }, [nativeStrokePreview, preferSvg]);
+
+    const resolvedCurrentPath =
+      !IS_WEB && preferSvg && nativeStrokePreview ? nativeSvgPath : currentPath;
+
     if (
       !pageIsActive ||
-      (!currentPath && !lassoPath && !(tool === "eraser" && eraserCursor))
+      (!resolvedCurrentPath && !lassoPath && !(tool === "eraser" && eraserCursor))
     ) {
       return null;
     }
 
-    if (!IS_WEB) {
+    if (!IS_WEB && !preferSvg) {
       return (
         <Canvas
           pointerEvents="none"
@@ -687,9 +962,9 @@ const LiveOverlay = React.memo(
         pointerEvents="none"
         style={{ position: "absolute", left: 0, top: 0, zIndex: 3 }}
       >
-        {currentPath ? (
+        {resolvedCurrentPath ? (
           <Path
-            d={currentPath}
+            d={resolvedCurrentPath}
             stroke={activeColor}
             strokeWidth={activeWidth}
             strokeOpacity={activeOpacity}
@@ -736,7 +1011,275 @@ const LiveOverlay = React.memo(
     prev.lassoPath === next.lassoPath &&
     prev.tool === next.tool &&
     prev.eraserCursor === next.eraserCursor &&
-    prev.eraserRadius === next.eraserRadius,
+    prev.eraserRadius === next.eraserRadius &&
+    prev.preferSvg === next.preferSvg &&
+    prev.nativeStrokePreview === next.nativeStrokePreview,
+);
+
+const HIDDEN_PATH = "M 0 0";
+
+const NativeLiveOverlay = React.memo(function NativeLiveOverlay({
+  width,
+  height,
+  pageIsActive,
+  activeColor,
+  activeWidth,
+  activeOpacity,
+  livePreviewStateRef,
+  nativeStrokePreview,
+}: {
+  width: number;
+  height: number;
+  pageIsActive: boolean;
+  activeColor: string;
+  activeWidth: number;
+  activeOpacity?: number;
+  livePreviewStateRef: React.RefObject<LivePreviewState>;
+  nativeStrokePreview?: NativeStrokePreviewState;
+}) {
+  const lassoRef = React.useRef<any>(null);
+  const eraserRef = React.useRef<any>(null);
+  const frameRef = React.useRef<number | null>(null);
+  const lastPreviewRef = React.useRef<LivePreviewState | null>(null);
+  const emptyStrokePath = useMemo(() => Skia.Path.Make(), []);
+  useEffect(() => {
+    const tick = () => {
+      const preview = livePreviewStateRef.current;
+      if (preview) {
+        const lastPreview = lastPreviewRef.current;
+        if (
+          !lastPreview ||
+          lastPreview.currentPath !== preview.currentPath ||
+          lastPreview.activeColor !== preview.activeColor ||
+          lastPreview.activeWidth !== preview.activeWidth ||
+          lastPreview.activeOpacity !== preview.activeOpacity ||
+          lastPreview.lassoPath !== preview.lassoPath ||
+          lastPreview.tool !== preview.tool ||
+          lastPreview.eraserCursor !== preview.eraserCursor ||
+          lastPreview.eraserRadius !== preview.eraserRadius ||
+          lastPreview.pageIsActive !== preview.pageIsActive
+        ) {
+          lastPreviewRef.current = preview;
+          const showLasso = preview.pageIsActive && preview.lassoPath.length > 0;
+          const showEraser =
+            preview.pageIsActive &&
+            preview.tool === "eraser" &&
+            preview.eraserCursor != null;
+
+          lassoRef.current?.setNativeProps?.({
+            d: showLasso ? preview.lassoPath : HIDDEN_PATH,
+            strokeOpacity: showLasso ? 1 : 0,
+            fillOpacity: showLasso ? 1 : 0,
+          });
+          eraserRef.current?.setNativeProps?.({
+            cx: preview.eraserCursor?.x ?? 0,
+            cy: preview.eraserCursor?.y ?? 0,
+            r: showEraser ? preview.eraserRadius : 0,
+            strokeOpacity: showEraser ? 1 : 0,
+            fillOpacity: showEraser ? 1 : 0,
+          });
+        }
+      }
+
+      frameRef.current = requestAnimationFrame(tick);
+    };
+
+    frameRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (frameRef.current != null) cancelAnimationFrame(frameRef.current);
+    };
+  }, [livePreviewStateRef]);
+
+  return (
+    <>
+      <Canvas
+        pointerEvents="none"
+        style={{
+          position: "absolute",
+          left: 0,
+          top: 0,
+          zIndex: 3,
+          width,
+          height,
+        }}
+      >
+        {pageIsActive ? (
+          <SkiaPath
+            path={nativeStrokePreview?.path ?? emptyStrokePath}
+            color={activeColor}
+            style="stroke"
+            strokeWidth={activeWidth}
+            strokeCap="round"
+            strokeJoin="round"
+            opacity={activeOpacity ?? 1}
+          />
+        ) : null}
+      </Canvas>
+      <Svg
+        width={width}
+        height={height}
+        pointerEvents="none"
+        style={{ position: "absolute", left: 0, top: 0, zIndex: 4 }}
+      >
+        <Path
+          ref={lassoRef}
+          d={HIDDEN_PATH}
+          stroke="rgba(0,0,0,0.65)"
+          strokeWidth={2}
+          fill="rgba(0,0,0,0.05)"
+          fillOpacity={0}
+          strokeOpacity={0}
+          strokeDasharray="6 6"
+          vectorEffect="non-scaling-stroke"
+        />
+        <Circle
+          ref={eraserRef}
+          cx={0}
+          cy={0}
+          r={0}
+          stroke="rgba(0,0,0,0.45)"
+          strokeOpacity={0}
+          strokeWidth={2}
+          fill="rgba(20,26,34,0.18)"
+          fillOpacity={0}
+          vectorEffect="non-scaling-stroke"
+        />
+      </Svg>
+    </>
+  );
+});
+
+const InteractivePageLayer = React.memo(
+  function InteractivePageLayer({
+    zoom,
+    pageWidth,
+    pageHeight,
+    pageIsActive,
+    currentPath,
+    activeColor,
+    activeWidth,
+    activeOpacity,
+    lassoPath,
+    tool,
+    eraserCursor,
+    eraserRadius,
+    hideInteractiveOverlays,
+    livePreviewStateRef,
+    nativeStrokePreview,
+    noteKind,
+    axisRotateHandles,
+    onAxisRotateStart,
+    onAxisRotate,
+    onAxisRotateEnd,
+  }: {
+    zoom: number;
+    pageWidth: number;
+    pageHeight: number;
+    pageIsActive: boolean;
+    currentPath: string;
+    activeColor: string;
+    activeWidth: number;
+    activeOpacity?: number;
+    lassoPath: string;
+    tool: "pen" | "highlighter" | "shape" | "text" | "eraser" | "lasso" | "hand";
+    eraserCursor: Point | null;
+    eraserRadius: number;
+    hideInteractiveOverlays: boolean;
+    livePreviewStateRef: React.RefObject<LivePreviewState>;
+    nativeStrokePreview?: NativeStrokePreviewState;
+    noteKind: NoteKind;
+    axisRotateHandles?: {
+      groupId: string;
+      axisRole: "x" | "y" | "z";
+      origin: Point;
+      handle: Point;
+    }[] | null;
+    onAxisRotateStart?: (axisRole: "x" | "y" | "z") => void;
+    onAxisRotate?: (point: Point) => void;
+    onAxisRotateEnd?: () => void;
+  }) {
+    const preferSvgLiveOverlay =
+      widthHeightArea(pageWidth, pageHeight) > NATIVE_LIVE_OVERLAY_AREA_LIMIT;
+    const canUseNativeLiveOverlay =
+      !IS_WEB &&
+      !preferSvgLiveOverlay &&
+      nativeStrokePreview != null &&
+      nativeStrokePreview.path != null;
+    return (
+      <>
+        {pageIsActive &&
+        !hideInteractiveOverlays &&
+        axisRotateHandles &&
+        axisRotateHandles.length > 0 &&
+        onAxisRotateStart &&
+        onAxisRotate &&
+        onAxisRotateEnd ? (
+          axisRotateHandles.map((axisHandle) => (
+            <AxisRotateHandleOverlay
+              key={`${axisHandle.groupId}-${axisHandle.axisRole}`}
+              origin={axisHandle.origin}
+              handle={axisHandle.handle}
+              zoom={zoom}
+              label={`Rotate ${axisHandle.axisRole.toUpperCase()}`}
+              onRotateStart={() => onAxisRotateStart(axisHandle.axisRole)}
+              onRotate={onAxisRotate}
+              onRotateEnd={onAxisRotateEnd}
+            />
+          ))
+        ) : null}
+
+        {canUseNativeLiveOverlay ? (
+          <NativeLiveOverlay
+            width={pageWidth}
+            height={pageHeight}
+            pageIsActive={pageIsActive}
+            activeColor={activeColor}
+            activeWidth={activeWidth}
+            activeOpacity={activeOpacity}
+            livePreviewStateRef={livePreviewStateRef}
+            nativeStrokePreview={nativeStrokePreview}
+          />
+        ) : (
+          <LiveOverlay
+            width={pageWidth}
+            height={pageHeight}
+            pageIsActive={pageIsActive}
+            currentPath={currentPath}
+            activeColor={activeColor}
+            activeWidth={activeWidth}
+            activeOpacity={activeOpacity}
+            lassoPath={lassoPath}
+            tool={tool}
+            eraserCursor={eraserCursor}
+            eraserRadius={eraserRadius}
+            preferSvg={preferSvgLiveOverlay}
+            nativeStrokePreview={nativeStrokePreview}
+          />
+        )}
+      </>
+    );
+  },
+  (prev, next) =>
+    prev.zoom === next.zoom &&
+    prev.pageWidth === next.pageWidth &&
+    prev.pageHeight === next.pageHeight &&
+    prev.pageIsActive === next.pageIsActive &&
+    prev.currentPath === next.currentPath &&
+    prev.activeColor === next.activeColor &&
+    prev.activeWidth === next.activeWidth &&
+    prev.activeOpacity === next.activeOpacity &&
+    prev.lassoPath === next.lassoPath &&
+    prev.tool === next.tool &&
+    prev.eraserCursor === next.eraserCursor &&
+    prev.eraserRadius === next.eraserRadius &&
+    prev.hideInteractiveOverlays === next.hideInteractiveOverlays &&
+    prev.livePreviewStateRef === next.livePreviewStateRef &&
+    prev.nativeStrokePreview === next.nativeStrokePreview &&
+    prev.noteKind === next.noteKind &&
+    prev.axisRotateHandles === next.axisRotateHandles &&
+    prev.onAxisRotateStart === next.onAxisRotateStart &&
+    prev.onAxisRotate === next.onAxisRotate &&
+    prev.onAxisRotateEnd === next.onAxisRotateEnd,
 );
 
 export const PageThumbnail = React.memo(function PageThumbnail({
@@ -846,15 +1389,19 @@ type PageCanvasProps = {
   pageHandlers: any;
   textMoveEnabled?: boolean;
   onMoveTextItem?: (itemId: string, point: Point) => void;
-  axisRotateHandles?: Array<{
+  axisRotateHandles?: {
     groupId: string;
     axisRole: "x" | "y" | "z";
     origin: Point;
     handle: Point;
-  }> | null;
+  }[] | null;
   onAxisRotateStart?: (axisRole: "x" | "y" | "z") => void;
   onAxisRotate?: (point: Point) => void;
   onAxisRotateEnd?: () => void;
+  hideInteractiveOverlays?: boolean;
+  onActivePageRender?: (renderStrokes: Stroke[]) => void;
+  livePreviewStateRef: React.RefObject<LivePreviewState>;
+  nativeStrokePreview?: NativeStrokePreviewState;
 };
 
 function PageCanvasInner({
@@ -888,108 +1435,18 @@ function PageCanvasInner({
   onAxisRotateStart,
   onAxisRotate,
   onAxisRotateEnd,
+  hideInteractiveOverlays = false,
+  onActivePageRender,
+  livePreviewStateRef,
+  nativeStrokePreview,
 }: PageCanvasProps) {
-  const isInfiniteCanvas = noteKind === "infinite";
-  const showBoardPattern =
-    isInfiniteCanvas &&
-    !pageBackground.dataUrl &&
-    !pageBackground.assetId &&
-    !pageBackground.pdfUri &&
-    pageWidth >= INFINITE_CANVAS_W &&
-    pageHeight >= INFINITE_CANVAS_H;
-  const resolvedBackgroundUrl = useResolvedBackgroundUrl(pageBackground);
+  useEffect(() => {
+    if (!pageIsActive) return;
+    onActivePageRender?.(renderStrokes);
+  }, [onActivePageRender, pageIsActive, renderStrokes]);
 
-  const boardPatternStyle =
-    boardBackgroundStyle === "blank"
-      ? null
-      : boardBackgroundStyle === "dots"
-      ? ({
-            position: "absolute",
-            inset: 0,
-            backgroundColor: "#F2EBE1",
-            backgroundImage:
-              "radial-gradient(circle, rgba(154,92,55,0.18) 1.1px, transparent 1.4px)",
-            backgroundSize: "24px 24px",
-            backgroundPosition: "12px 12px",
-          } as any)
-        : ({
-            position: "absolute",
-            inset: 0,
-            backgroundColor: "#F2EBE1",
-            backgroundImage: [
-              "linear-gradient(rgba(124,102,79,0.10) 1px, transparent 1px)",
-              "linear-gradient(90deg, rgba(124,102,79,0.10) 1px, transparent 1px)",
-              "linear-gradient(rgba(154,92,55,0.07) 1px, transparent 1px)",
-              "linear-gradient(90deg, rgba(154,92,55,0.07) 1px, transparent 1px)",
-            ].join(", "),
-            backgroundSize: "30px 30px, 30px 30px, 150px 150px, 150px 150px",
-          } as any);
-  const pageTemplateStyle =
-    pageTemplate === "ruled"
-      ? ({
-          position: "absolute",
-          inset: 0,
-          backgroundColor: PAGE_BG,
-          backgroundImage:
-            "linear-gradient(transparent 31px, rgba(35,52,70,0.10) 32px)",
-          backgroundSize: "100% 32px",
-        } as any)
-      : pageTemplate === "dots"
-        ? ({
-            position: "absolute",
-            inset: 0,
-            backgroundColor: PAGE_BG,
-            backgroundImage:
-              "radial-gradient(circle, rgba(154,92,55,0.18) 1px, transparent 1.3px)",
-            backgroundSize: "22px 22px",
-            backgroundPosition: "11px 11px",
-          } as any)
-        : pageTemplate === "grid" || pageTemplate === "graph-coarse"
-          ? ({
-              position: "absolute",
-              inset: 0,
-              backgroundColor: PAGE_BG,
-              backgroundImage: [
-                "linear-gradient(rgba(124,102,79,0.10) 1px, transparent 1px)",
-                "linear-gradient(90deg, rgba(124,102,79,0.10) 1px, transparent 1px)",
-              ].join(", "),
-              backgroundSize:
-                pageTemplate === "graph-coarse"
-                  ? "32px 32px, 32px 32px"
-                  : "28px 28px, 28px 28px",
-            } as any)
-          : pageTemplate === "graph-fine"
-            ? ({
-                position: "absolute",
-                inset: 0,
-                backgroundColor: PAGE_BG,
-                backgroundImage: [
-                  "linear-gradient(rgba(124,102,79,0.09) 1px, transparent 1px)",
-                  "linear-gradient(90deg, rgba(124,102,79,0.09) 1px, transparent 1px)",
-                ].join(", "),
-                backgroundSize: "20px 20px, 20px 20px",
-              } as any)
-            : pageTemplate === "polar"
-              ? ({
-                  position: "absolute",
-                  inset: 0,
-                  backgroundColor: PAGE_BG,
-                  backgroundImage:
-                    "radial-gradient(circle at center, rgba(124,102,79,0.10) 1px, transparent 1px), repeating-radial-gradient(circle at center, transparent 0 39px, rgba(124,102,79,0.10) 39px 40px), repeating-conic-gradient(from 0deg, rgba(124,102,79,0.10) 0deg 1deg, transparent 1deg 15deg)",
-                } as any)
-              : pageTemplate === "isometric"
-                ? ({
-                    position: "absolute",
-                    inset: 0,
-                    backgroundColor: PAGE_BG,
-                    backgroundImage: [
-                      "linear-gradient(30deg, rgba(124,102,79,0.10) 1px, transparent 1px)",
-                      "linear-gradient(150deg, rgba(124,102,79,0.10) 1px, transparent 1px)",
-                      "linear-gradient(90deg, rgba(124,102,79,0.06) 1px, transparent 1px)",
-                    ].join(", "),
-                    backgroundSize: "28px 28px, 28px 28px, 28px 28px",
-                  } as any)
-          : null;
+  const isInfiniteCanvas = noteKind === "infinite";
+  const isAndroidInfiniteCanvas = Platform.OS === "android" && isInfiniteCanvas;
 
   const pageContent = (
     <View
@@ -1003,13 +1460,15 @@ function PageCanvasInner({
           borderColor: isInfiniteCanvas
             ? "rgba(154,92,55,0.12)"
             : PAGE_BORDER,
-          borderRadius: isInfiniteCanvas ? 30 : 22,
-          overflow: "hidden",
-          shadowColor: "#000",
-          shadowOpacity: 0.12,
-          shadowRadius: 24,
-          shadowOffset: { width: 0, height: 14 },
-          boxShadow: "0 22px 40px rgba(56,42,26,0.16)",
+          borderRadius: isAndroidInfiniteCanvas ? 0 : isInfiniteCanvas ? 30 : 22,
+          overflow: isAndroidInfiniteCanvas ? "visible" : "hidden",
+          shadowColor: isAndroidInfiniteCanvas ? undefined : "#000",
+          shadowOpacity: isAndroidInfiniteCanvas ? 0 : 0.12,
+          shadowRadius: isAndroidInfiniteCanvas ? 0 : 24,
+          shadowOffset: isAndroidInfiniteCanvas ? undefined : { width: 0, height: 14 },
+          boxShadow: isAndroidInfiniteCanvas
+            ? "none"
+            : "0 22px 40px rgba(56,42,26,0.16)",
           touchAction: tool === "hand" ? "pan-x pan-y" : "none",
           userSelect: "none",
         } as any
@@ -1026,94 +1485,30 @@ function PageCanvasInner({
           } as any
         }
       >
-        <View
-          pointerEvents="none"
-          style={{
-            position: "absolute",
-            left: 0,
-            top: 0,
-            width: pageWidth,
-            height: pageHeight,
-            zIndex: 0,
-            backgroundColor: isInfiniteCanvas ? "#F5EFE6" : undefined,
-          }}
-        >
-          {showBoardPattern && boardPatternStyle ? (
-            <View style={boardPatternStyle} />
-          ) : null}
-          {!isInfiniteCanvas && pageTemplateStyle ? (
-            <View style={pageTemplateStyle} />
-          ) : null}
-          {resolvedBackgroundUrl ? (
-            <Image
-              source={{ uri: resolvedBackgroundUrl }}
-              style={{
-                position: "absolute",
-                left: 0,
-                top: 0,
-                width: pageWidth,
-                height: pageHeight,
-              }}
-              resizeMode="cover"
-            />
-          ) : null}
-          {!resolvedBackgroundUrl &&
-          pageBackground.pdfUri &&
-          pageBackground.pdfPageNumber ? (
-            <PdfPageBackground
-              uri={pageBackground.pdfUri}
-              pageNumber={pageBackground.pdfPageNumber}
-              width={pageWidth}
-              height={pageHeight}
-            />
-          ) : null}
-        </View>
-
-        <StaticStrokeSurface
-          width={pageWidth}
-          height={pageHeight}
-          strokes={renderStrokes}
-          showSelection={pageIsActive}
+        <CommittedPageLayer
+          zoom={zoom}
+          noteKind={noteKind}
+          pageWidth={pageWidth}
+          pageHeight={pageHeight}
+          boardBackgroundStyle={boardBackgroundStyle}
+          pageTemplate={pageTemplate}
+          pageBackground={pageBackground}
+          renderStrokes={renderStrokes}
+          textItems={textItems}
+          pageIsActive={pageIsActive}
           selectedSet={selectedSet}
           selectionPreviewOffset={selectionPreviewOffset}
+          hideInteractiveOverlays={hideInteractiveOverlays}
+          textMoveEnabled={textMoveEnabled}
+          onMoveTextItem={onMoveTextItem}
         />
 
-        {textItems.map((item) => (
-          <TextItemOverlay
-            key={item.id}
-            item={item}
-            zoom={zoom}
-            pageWidth={pageWidth}
-            pageHeight={pageHeight}
-            canDrag={pageIsActive && textMoveEnabled}
-            onMove={onMoveTextItem}
-          />
-        ))}
-
-        {pageIsActive &&
-        axisRotateHandles &&
-        axisRotateHandles.length > 0 &&
-        onAxisRotateStart &&
-        onAxisRotate &&
-        onAxisRotateEnd ? (
-          axisRotateHandles.map((axisHandle) => (
-            <AxisRotateHandleOverlay
-              key={`${axisHandle.groupId}-${axisHandle.axisRole}`}
-              origin={axisHandle.origin}
-              handle={axisHandle.handle}
-              zoom={zoom}
-              label={`Rotate ${axisHandle.axisRole.toUpperCase()}`}
-              onRotateStart={() => onAxisRotateStart(axisHandle.axisRole)}
-              onRotate={onAxisRotate}
-              onRotateEnd={onAxisRotateEnd}
-            />
-          ))
-        ) : null}
-
-        <LiveOverlay
-          width={pageWidth}
-          height={pageHeight}
+        <InteractivePageLayer
+          zoom={zoom}
+          pageWidth={pageWidth}
+          pageHeight={pageHeight}
           pageIsActive={pageIsActive}
+          noteKind={noteKind}
           currentPath={currentPath}
           activeColor={activeColor}
           activeWidth={activeWidth}
@@ -1122,11 +1517,20 @@ function PageCanvasInner({
           tool={tool}
           eraserCursor={eraserCursor}
           eraserRadius={eraserRadius}
+          hideInteractiveOverlays={hideInteractiveOverlays}
+          livePreviewStateRef={livePreviewStateRef}
+          nativeStrokePreview={nativeStrokePreview}
+          axisRotateHandles={axisRotateHandles}
+          onAxisRotateStart={onAxisRotateStart}
+          onAxisRotate={onAxisRotate}
+          onAxisRotateEnd={onAxisRotateEnd}
         />
-
       </View>
 
-      {pageIsActive && selectionBounds && selectionMenu ? (
+      {pageIsActive &&
+      !hideInteractiveOverlays &&
+      selectionBounds &&
+      selectionMenu ? (
         <View
           style={{
             position: "absolute",
@@ -1190,7 +1594,11 @@ function arePageCanvasPropsEqual(prev: PageCanvasProps, next: PageCanvasProps) {
     prev.axisRotateHandles !== next.axisRotateHandles ||
     prev.onAxisRotateStart !== next.onAxisRotateStart ||
     prev.onAxisRotate !== next.onAxisRotate ||
-    prev.onAxisRotateEnd !== next.onAxisRotateEnd
+    prev.onAxisRotateEnd !== next.onAxisRotateEnd ||
+    prev.hideInteractiveOverlays !== next.hideInteractiveOverlays ||
+    prev.onActivePageRender !== next.onActivePageRender ||
+    prev.livePreviewStateRef !== next.livePreviewStateRef ||
+    prev.nativeStrokePreview !== next.nativeStrokePreview
   ) {
     return false;
   }

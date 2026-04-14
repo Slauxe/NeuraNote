@@ -18,6 +18,7 @@ function cloneStroke(stroke: Stroke): Stroke {
   return {
     ...stroke,
     points: stroke.points.map((point) => ({ ...point })),
+    segmentBBoxes: stroke.segmentBBoxes.map((bbox) => ({ ...bbox })),
     axisOrigin: stroke.axisOrigin ? { ...stroke.axisOrigin } : undefined,
     axisHandle: stroke.axisHandle ? { ...stroke.axisHandle } : undefined,
     bbox: { ...stroke.bbox },

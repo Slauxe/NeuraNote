@@ -16,6 +16,7 @@ import {
   type Point,
   type Stroke,
 } from "./editorTypes";
+import { buildSegmentBBoxes } from "./editorGeometry";
 
 function pointsToSmoothPath(points: Point[]) {
   if (points.length === 0) return "";
@@ -143,6 +144,7 @@ export function sanitizeStroke(raw: any): Stroke | null {
   return {
     id: typeof raw.id === "string" && raw.id ? raw.id : uid(),
     points: safePoints,
+    segmentBBoxes: buildSegmentBBoxes(safePoints),
     d,
     w: Number.isFinite(raw.w) ? raw.w : 4,
     c: typeof raw.c === "string" ? raw.c : "#111111",

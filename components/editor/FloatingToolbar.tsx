@@ -14,6 +14,7 @@ import {
 } from "lucide-react-native";
 import React, { useState } from "react";
 import { GestureDetector } from "react-native-gesture-handler";
+import Animated from "react-native-reanimated";
 import { Modal, Pressable, Text, View } from "react-native";
 
 import { EditorIconButton } from "@/components/editor/EditorIconButton";
@@ -28,6 +29,7 @@ type Tool = "pen" | "highlighter" | "shape" | "text" | "eraser" | "lasso" | "han
 
 type FloatingToolbarProps = {
   toolbarPos: { x: number; y: number };
+  floatingStyle?: any;
   toolbarOrientation: "horizontal" | "vertical";
   penColor: string;
   tool: Tool;
@@ -59,6 +61,7 @@ type FloatingToolbarProps = {
 
 export function FloatingToolbar({
   toolbarPos,
+  floatingStyle,
   toolbarOrientation,
   penColor,
   tool,
@@ -120,19 +123,24 @@ export function FloatingToolbar({
   return (
     <>
       <View
-        style={{
-          position: "absolute",
-          left: toolbarPos.x,
-          top: toolbarPos.y,
-          zIndex: 50,
-        }}
+        style={{ position: "absolute", left: 0, top: 0, zIndex: 50 }}
+        pointerEvents="box-none"
+      >
+        <Animated.View
+          style={[
+            {
+              position: "absolute",
+              left: toolbarPos.x,
+              top: toolbarPos.y,
+            },
+            floatingStyle,
+          ]}
         onLayout={(e) => {
           const { width, height } = e.nativeEvent.layout;
           onToolbarLayout({ w: width, h: height });
         }}
-        pointerEvents="box-none"
-      >
-        <View
+        >
+          <View
           style={[
             {
               padding: 5,
@@ -215,7 +223,8 @@ export function FloatingToolbar({
           <EditorIconButton onPress={() => setIsOverflowOpen(true)}>
             <MoreHorizontal size={18} color={iconOff} />
           </EditorIconButton>
-        </View>
+          </View>
+        </Animated.View>
       </View>
 
       <Modal
