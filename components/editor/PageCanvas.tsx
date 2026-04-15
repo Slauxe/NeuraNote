@@ -9,12 +9,18 @@ import {
 import React, { useEffect, useMemo, useState } from "react";
 import { GestureDetector } from "react-native-gesture-handler";
 import { Image, Platform, Text, View } from "react-native";
+import Animated, {
+  useAnimatedProps,
+  useAnimatedStyle,
+} from "react-native-reanimated";
 import Svg, { Circle, G, Path, Rect } from "react-native-svg";
 
 import PdfPageBackground from "../PdfPageBackground";
 import { STUDIO } from "@/components/studio/StudioPrimitives";
 import type {
   LivePreviewState,
+  NativeInteractionPreviewState,
+  NativeSelectionPreviewState,
   NativeStrokePreviewState,
 } from "@/hooks/useCanvasInteractions";
 import { pointsToSmoothPath } from "@/lib/editorGeometry";
@@ -1017,6 +1023,8 @@ const LiveOverlay = React.memo(
 );
 
 const HIDDEN_PATH = "M 0 0";
+const AnimatedSvgPath = Animated.createAnimatedComponent(Path);
+const AnimatedSvgCircle = Animated.createAnimatedComponent(Circle);
 
 const NativeLiveOverlay = React.memo(function NativeLiveOverlay({
   width,
@@ -1025,8 +1033,10 @@ const NativeLiveOverlay = React.memo(function NativeLiveOverlay({
   activeColor,
   activeWidth,
   activeOpacity,
+  eraserPreviewColor,
   livePreviewStateRef,
   nativeStrokePreview,
+  nativeInteractionPreview,
 }: {
   width: number;
   height: number;
@@ -1034,51 +1044,83 @@ const NativeLiveOverlay = React.memo(function NativeLiveOverlay({
   activeColor: string;
   activeWidth: number;
   activeOpacity?: number;
+  eraserPreviewColor: string;
   livePreviewStateRef: React.RefObject<LivePreviewState>;
   nativeStrokePreview?: NativeStrokePreviewState;
+  nativeInteractionPreview?: NativeInteractionPreviewState;
 }) {
+  const emptyStrokePath = useMemo(() => Skia.Path.Make(), []);
   const lassoRef = React.useRef<any>(null);
   const eraserRef = React.useRef<any>(null);
   const frameRef = React.useRef<number | null>(null);
-  const lastPreviewRef = React.useRef<LivePreviewState | null>(null);
-  const emptyStrokePath = useMemo(() => Skia.Path.Make(), []);
+
+  const animatedLassoProps = useAnimatedProps(() => {
+    const nativePath = nativeInteractionPreview?.lassoPath.value ?? "";
+    const visible = pageIsActive && nativePath.length > 0;
+    return {
+      d: visible ? nativePath : HIDDEN_PATH,
+      strokeOpacity: visible ? 1 : 0,
+      fillOpacity: visible ? 1 : 0,
+    } as any;
+  }, [nativeInteractionPreview, pageIsActive]);
+
+  const animatedEraserProps = useAnimatedProps(() => {
+    const visible =
+      pageIsActive && (nativeInteractionPreview?.eraserVisible.value ?? false);
+    return {
+      cx: visible ? (nativeInteractionPreview?.eraserX.value ?? 0) : 0,
+      cy: visible ? (nativeInteractionPreview?.eraserY.value ?? 0) : 0,
+      r: visible ? (nativeInteractionPreview?.eraserRadius.value ?? 0) : 0,
+      strokeOpacity: visible ? 1 : 0,
+      fillOpacity: visible ? 1 : 0,
+    } as any;
+  }, [nativeInteractionPreview, pageIsActive]);
+
   useEffect(() => {
+    if (Platform.OS === "android") {
+      return;
+    }
     const tick = () => {
       const preview = livePreviewStateRef.current;
       if (preview) {
-        const lastPreview = lastPreviewRef.current;
-        if (
-          !lastPreview ||
-          lastPreview.currentPath !== preview.currentPath ||
-          lastPreview.activeColor !== preview.activeColor ||
-          lastPreview.activeWidth !== preview.activeWidth ||
-          lastPreview.activeOpacity !== preview.activeOpacity ||
-          lastPreview.lassoPath !== preview.lassoPath ||
-          lastPreview.tool !== preview.tool ||
-          lastPreview.eraserCursor !== preview.eraserCursor ||
-          lastPreview.eraserRadius !== preview.eraserRadius ||
-          lastPreview.pageIsActive !== preview.pageIsActive
-        ) {
-          lastPreviewRef.current = preview;
-          const showLasso = preview.pageIsActive && preview.lassoPath.length > 0;
-          const showEraser =
-            preview.pageIsActive &&
-            preview.tool === "eraser" &&
-            preview.eraserCursor != null;
+        const showLasso = preview.pageIsActive && preview.lassoPath.length > 0;
+        const showEraser =
+          preview.pageIsActive &&
+          preview.tool === "eraser" &&
+          preview.eraserCursor != null;
+        const nativeLassoPath = nativeInteractionPreview?.lassoPath.value ?? "";
+        const nativeEraserVisible =
+          nativeInteractionPreview?.eraserVisible.value ?? false;
+        const resolvedEraserX = nativeEraserVisible
+          ? (nativeInteractionPreview?.eraserX.value ?? 0)
+          : (preview.eraserCursor?.x ?? 0);
+        const resolvedEraserY = nativeEraserVisible
+          ? (nativeInteractionPreview?.eraserY.value ?? 0)
+          : (preview.eraserCursor?.y ?? 0);
+        const resolvedEraserRadius = nativeEraserVisible
+          ? (nativeInteractionPreview?.eraserRadius.value ?? 0)
+          : (showEraser ? preview.eraserRadius : 0);
+        const lassoPath =
+          nativeLassoPath.length > 0
+            ? nativeLassoPath
+            : showLasso
+              ? preview.lassoPath
+              : HIDDEN_PATH;
+        const lassoOpacity = nativeLassoPath.length > 0 || showLasso ? 1 : 0;
+        const eraserOpacity = nativeEraserVisible || showEraser ? 1 : 0;
 
-          lassoRef.current?.setNativeProps?.({
-            d: showLasso ? preview.lassoPath : HIDDEN_PATH,
-            strokeOpacity: showLasso ? 1 : 0,
-            fillOpacity: showLasso ? 1 : 0,
-          });
-          eraserRef.current?.setNativeProps?.({
-            cx: preview.eraserCursor?.x ?? 0,
-            cy: preview.eraserCursor?.y ?? 0,
-            r: showEraser ? preview.eraserRadius : 0,
-            strokeOpacity: showEraser ? 1 : 0,
-            fillOpacity: showEraser ? 1 : 0,
-          });
-        }
+        lassoRef.current?.setNativeProps?.({
+          d: lassoPath,
+          strokeOpacity: lassoOpacity,
+          fillOpacity: lassoOpacity,
+        });
+        eraserRef.current?.setNativeProps?.({
+          cx: resolvedEraserX,
+          cy: resolvedEraserY,
+          r: resolvedEraserRadius,
+          strokeOpacity: eraserOpacity,
+          fillOpacity: eraserOpacity,
+        });
       }
 
       frameRef.current = requestAnimationFrame(tick);
@@ -1088,7 +1130,7 @@ const NativeLiveOverlay = React.memo(function NativeLiveOverlay({
     return () => {
       if (frameRef.current != null) cancelAnimationFrame(frameRef.current);
     };
-  }, [livePreviewStateRef]);
+  }, [livePreviewStateRef, nativeInteractionPreview]);
 
   return (
     <>
@@ -1104,15 +1146,45 @@ const NativeLiveOverlay = React.memo(function NativeLiveOverlay({
         }}
       >
         {pageIsActive ? (
-          <SkiaPath
-            path={nativeStrokePreview?.path ?? emptyStrokePath}
-            color={activeColor}
-            style="stroke"
-            strokeWidth={activeWidth}
-            strokeCap="round"
-            strokeJoin="round"
-            opacity={activeOpacity ?? 1}
-          />
+          <>
+            <SkiaPath
+              path={nativeStrokePreview?.path ?? emptyStrokePath}
+              color={activeColor}
+              style="stroke"
+              strokeWidth={activeWidth}
+              strokeCap="round"
+              strokeJoin="round"
+              opacity={activeOpacity ?? 1}
+            />
+            {Platform.OS === "android" &&
+            (nativeInteractionPreview?.eraserTrailVisible.value ?? false) ? (
+              <SkiaPath
+                path={nativeInteractionPreview?.eraserTrailPath ?? emptyStrokePath}
+                color={eraserPreviewColor}
+                style="stroke"
+                strokeWidth={(nativeInteractionPreview?.eraserRadius.value ?? 0) * 2}
+                strokeCap="round"
+                strokeJoin="round"
+              />
+            ) : null}
+            {Platform.OS === "android" ? (
+              <>
+                <SkiaPath
+                  path={nativeInteractionPreview?.lassoDrawPath ?? emptyStrokePath}
+                  color="rgba(0,0,0,0.05)"
+                  style="fill"
+                />
+                <SkiaPath
+                  path={nativeInteractionPreview?.lassoDrawPath ?? emptyStrokePath}
+                  color="rgba(0,0,0,0.65)"
+                  style="stroke"
+                  strokeWidth={2}
+                >
+                  <DashPathEffect intervals={DASH_INTERVALS} />
+                </SkiaPath>
+              </>
+            ) : null}
+          </>
         ) : null}
       </Canvas>
       <Svg
@@ -1121,8 +1193,9 @@ const NativeLiveOverlay = React.memo(function NativeLiveOverlay({
         pointerEvents="none"
         style={{ position: "absolute", left: 0, top: 0, zIndex: 4 }}
       >
-        <Path
+        <AnimatedSvgPath
           ref={lassoRef}
+          animatedProps={Platform.OS !== "android" ? animatedLassoProps : undefined}
           d={HIDDEN_PATH}
           stroke="rgba(0,0,0,0.65)"
           strokeWidth={2}
@@ -1132,8 +1205,9 @@ const NativeLiveOverlay = React.memo(function NativeLiveOverlay({
           strokeDasharray="6 6"
           vectorEffect="non-scaling-stroke"
         />
-        <Circle
+        <AnimatedSvgCircle
           ref={eraserRef}
+          animatedProps={Platform.OS === "android" ? animatedEraserProps : undefined}
           cx={0}
           cy={0}
           r={0}
@@ -1164,8 +1238,10 @@ const InteractivePageLayer = React.memo(
     eraserCursor,
     eraserRadius,
     hideInteractiveOverlays,
+    eraserPreviewColor,
     livePreviewStateRef,
     nativeStrokePreview,
+    nativeInteractionPreview,
     noteKind,
     axisRotateHandles,
     onAxisRotateStart,
@@ -1185,8 +1261,10 @@ const InteractivePageLayer = React.memo(
     eraserCursor: Point | null;
     eraserRadius: number;
     hideInteractiveOverlays: boolean;
+    eraserPreviewColor: string;
     livePreviewStateRef: React.RefObject<LivePreviewState>;
     nativeStrokePreview?: NativeStrokePreviewState;
+    nativeInteractionPreview?: NativeInteractionPreviewState;
     noteKind: NoteKind;
     axisRotateHandles?: {
       groupId: string;
@@ -1236,8 +1314,10 @@ const InteractivePageLayer = React.memo(
             activeColor={activeColor}
             activeWidth={activeWidth}
             activeOpacity={activeOpacity}
+            eraserPreviewColor={eraserPreviewColor}
             livePreviewStateRef={livePreviewStateRef}
             nativeStrokePreview={nativeStrokePreview}
+            nativeInteractionPreview={nativeInteractionPreview}
           />
         ) : (
           <LiveOverlay
@@ -1273,8 +1353,10 @@ const InteractivePageLayer = React.memo(
     prev.eraserCursor === next.eraserCursor &&
     prev.eraserRadius === next.eraserRadius &&
     prev.hideInteractiveOverlays === next.hideInteractiveOverlays &&
+    prev.eraserPreviewColor === next.eraserPreviewColor &&
     prev.livePreviewStateRef === next.livePreviewStateRef &&
     prev.nativeStrokePreview === next.nativeStrokePreview &&
+    prev.nativeInteractionPreview === next.nativeInteractionPreview &&
     prev.noteKind === next.noteKind &&
     prev.axisRotateHandles === next.axisRotateHandles &&
     prev.onAxisRotateStart === next.onAxisRotateStart &&
@@ -1386,6 +1468,7 @@ type PageCanvasProps = {
   tool: "pen" | "highlighter" | "shape" | "text" | "eraser" | "lasso" | "hand";
   eraserCursor: Point | null;
   eraserRadius: number;
+  eraserPreviewColor: string;
   pageHandlers: any;
   textMoveEnabled?: boolean;
   onMoveTextItem?: (itemId: string, point: Point) => void;
@@ -1402,6 +1485,8 @@ type PageCanvasProps = {
   onActivePageRender?: (renderStrokes: Stroke[]) => void;
   livePreviewStateRef: React.RefObject<LivePreviewState>;
   nativeStrokePreview?: NativeStrokePreviewState;
+  nativeInteractionPreview?: NativeInteractionPreviewState;
+  nativeSelectionPreview?: NativeSelectionPreviewState;
 };
 
 function PageCanvasInner({
@@ -1428,6 +1513,7 @@ function PageCanvasInner({
   tool,
   eraserCursor,
   eraserRadius,
+  eraserPreviewColor,
   pageHandlers,
   textMoveEnabled = false,
   onMoveTextItem,
@@ -1439,6 +1525,8 @@ function PageCanvasInner({
   onActivePageRender,
   livePreviewStateRef,
   nativeStrokePreview,
+  nativeInteractionPreview,
+  nativeSelectionPreview,
 }: PageCanvasProps) {
   useEffect(() => {
     if (!pageIsActive) return;
@@ -1447,6 +1535,44 @@ function PageCanvasInner({
 
   const isInfiniteCanvas = noteKind === "infinite";
   const isAndroidInfiniteCanvas = Platform.OS === "android" && isInfiniteCanvas;
+  const useNativeSelectionPreview =
+    Platform.OS === "android" &&
+    pageIsActive &&
+    nativeSelectionPreview != null &&
+    selectedSet.size > 0;
+  const nativeSelectionStyle = useAnimatedStyle(
+    () => ({
+      transform: [
+        {
+          translateX:
+            nativeSelectionPreview?.active.value === true
+              ? nativeSelectionPreview.dx.value
+              : 0,
+        },
+        {
+          translateY:
+            nativeSelectionPreview?.active.value === true
+              ? nativeSelectionPreview.dy.value
+              : 0,
+        },
+      ],
+    }),
+    [nativeSelectionPreview],
+  );
+  const baseStrokes = useMemo(
+    () =>
+      useNativeSelectionPreview
+        ? renderStrokes.filter((stroke) => !selectedSet.has(stroke.id))
+        : renderStrokes,
+    [renderStrokes, selectedSet, useNativeSelectionPreview],
+  );
+  const selectedStrokes = useMemo(
+    () =>
+      useNativeSelectionPreview
+        ? renderStrokes.filter((stroke) => selectedSet.has(stroke.id))
+        : [],
+    [renderStrokes, selectedSet, useNativeSelectionPreview],
+  );
 
   const pageContent = (
     <View
@@ -1485,23 +1611,69 @@ function PageCanvasInner({
           } as any
         }
       >
-        <CommittedPageLayer
-          zoom={zoom}
-          noteKind={noteKind}
-          pageWidth={pageWidth}
-          pageHeight={pageHeight}
-          boardBackgroundStyle={boardBackgroundStyle}
-          pageTemplate={pageTemplate}
-          pageBackground={pageBackground}
-          renderStrokes={renderStrokes}
-          textItems={textItems}
-          pageIsActive={pageIsActive}
-          selectedSet={selectedSet}
-          selectionPreviewOffset={selectionPreviewOffset}
-          hideInteractiveOverlays={hideInteractiveOverlays}
-          textMoveEnabled={textMoveEnabled}
-          onMoveTextItem={onMoveTextItem}
-        />
+        {useNativeSelectionPreview ? (
+          <>
+            <CommittedPageLayer
+              zoom={zoom}
+              noteKind={noteKind}
+              pageWidth={pageWidth}
+              pageHeight={pageHeight}
+              boardBackgroundStyle={boardBackgroundStyle}
+              pageTemplate={pageTemplate}
+              pageBackground={pageBackground}
+              renderStrokes={baseStrokes}
+              textItems={textItems}
+              pageIsActive={pageIsActive}
+              selectedSet={selectedSet}
+              selectionPreviewOffset={{ dx: 0, dy: 0 }}
+              hideInteractiveOverlays={hideInteractiveOverlays}
+              textMoveEnabled={textMoveEnabled}
+              onMoveTextItem={onMoveTextItem}
+            />
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                {
+                  position: "absolute",
+                  left: 0,
+                  top: 0,
+                  width: pageWidth,
+                  height: pageHeight,
+                  zIndex: 2,
+                },
+                nativeSelectionStyle,
+              ]}
+            >
+              <StaticStrokeSurface
+                width={pageWidth}
+                height={pageHeight}
+                strokes={selectedStrokes}
+                showSelection={!hideInteractiveOverlays}
+                selectedSet={selectedSet}
+                selectionPreviewOffset={{ dx: 0, dy: 0 }}
+                preferSvg={isInfiniteCanvas}
+              />
+            </Animated.View>
+          </>
+        ) : (
+          <CommittedPageLayer
+            zoom={zoom}
+            noteKind={noteKind}
+            pageWidth={pageWidth}
+            pageHeight={pageHeight}
+            boardBackgroundStyle={boardBackgroundStyle}
+            pageTemplate={pageTemplate}
+            pageBackground={pageBackground}
+            renderStrokes={renderStrokes}
+            textItems={textItems}
+            pageIsActive={pageIsActive}
+            selectedSet={selectedSet}
+            selectionPreviewOffset={selectionPreviewOffset}
+            hideInteractiveOverlays={hideInteractiveOverlays}
+            textMoveEnabled={textMoveEnabled}
+            onMoveTextItem={onMoveTextItem}
+          />
+        )}
 
         <InteractivePageLayer
           zoom={zoom}
@@ -1518,8 +1690,10 @@ function PageCanvasInner({
           eraserCursor={eraserCursor}
           eraserRadius={eraserRadius}
           hideInteractiveOverlays={hideInteractiveOverlays}
+          eraserPreviewColor={eraserPreviewColor}
           livePreviewStateRef={livePreviewStateRef}
           nativeStrokePreview={nativeStrokePreview}
+          nativeInteractionPreview={nativeInteractionPreview}
           axisRotateHandles={axisRotateHandles}
           onAxisRotateStart={onAxisRotateStart}
           onAxisRotate={onAxisRotate}
@@ -1588,6 +1762,7 @@ function arePageCanvasPropsEqual(prev: PageCanvasProps, next: PageCanvasProps) {
     prev.activeOpacity !== next.activeOpacity ||
     prev.tool !== next.tool ||
     prev.eraserRadius !== next.eraserRadius ||
+    prev.eraserPreviewColor !== next.eraserPreviewColor ||
     prev.pageHandlers !== next.pageHandlers ||
     prev.textMoveEnabled !== next.textMoveEnabled ||
     prev.onMoveTextItem !== next.onMoveTextItem ||
@@ -1598,7 +1773,9 @@ function arePageCanvasPropsEqual(prev: PageCanvasProps, next: PageCanvasProps) {
     prev.hideInteractiveOverlays !== next.hideInteractiveOverlays ||
     prev.onActivePageRender !== next.onActivePageRender ||
     prev.livePreviewStateRef !== next.livePreviewStateRef ||
-    prev.nativeStrokePreview !== next.nativeStrokePreview
+    prev.nativeStrokePreview !== next.nativeStrokePreview ||
+    prev.nativeInteractionPreview !== next.nativeInteractionPreview ||
+    prev.nativeSelectionPreview !== next.nativeSelectionPreview
   ) {
     return false;
   }

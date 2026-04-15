@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Platform } from "react-native";
 import { Gesture } from "react-native-gesture-handler";
+import { Skia } from "@shopify/react-native-skia";
+import { notifyChange } from "@shopify/react-native-skia/lib/module/external/reanimated/interpolators";
+import {
+  runOnJS,
+  useSharedValue,
+  type SharedValue,
+} from "react-native-reanimated";
 
 import {
   buildSegmentBBoxes,
@@ -13,6 +20,7 @@ import {
   pointInPoly,
   pointsToSmoothPath,
   smoothTowards,
+  splitStrokeByEraserPathSegments,
   splitStrokeByEraserPathPoints,
   transformStroke,
   uid,
@@ -46,9 +54,35 @@ export type LivePreviewState = {
 };
 
 export type NativeStrokePreviewState = {
-  path: null;
-  points: { value: Point[] };
-  visible: { value: boolean };
+  path: SharedValue<any>;
+  points: SharedValue<Point[]>;
+  visible: SharedValue<boolean>;
+};
+
+export type NativeInteractionPreviewState = {
+  lassoPath: SharedValue<string>;
+  lassoDrawPath: SharedValue<any>;
+  lassoVisible: SharedValue<boolean>;
+  eraserX: SharedValue<number>;
+  eraserY: SharedValue<number>;
+  eraserRadius: SharedValue<number>;
+  eraserVisible: SharedValue<boolean>;
+  eraserTrailPath: SharedValue<any>;
+  eraserTrailVisible: SharedValue<boolean>;
+};
+
+export type NativeSelectionPreviewState = {
+  dx: SharedValue<number>;
+  dy: SharedValue<number>;
+  active: SharedValue<boolean>;
+};
+
+type NativeEraserTarget = {
+  id: string;
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
 };
 
 type UseCanvasInteractionsArgs = {
@@ -98,6 +132,69 @@ type UseCanvasInteractionsArgs = {
 
 const EMPTY_SELECTION = new Set<string>();
 const ERASER_MAX_QUEUED_POINTS = 48;
+const NATIVE_ERASER_FLUSH_POINTS = 2;
+const NATIVE_LASSO_MIN_GAP = 5;
+
+function computeBoundsForPoints(points: Point[]) {
+  "worklet";
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const point of points) {
+    if (point.x < minX) minX = point.x;
+    if (point.y < minY) minY = point.y;
+    if (point.x > maxX) maxX = point.x;
+    if (point.y > maxY) maxY = point.y;
+  }
+
+  if (!isFinite(minX)) minX = minY = maxX = maxY = 0;
+  return { minX, minY, maxX, maxY };
+}
+
+function collectNativeCandidateIdsForBounds(
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+  targets: NativeEraserTarget[],
+) {
+  "worklet";
+  if (targets.length === 0) return [];
+  const ids: string[] = [];
+
+  for (const target of targets) {
+    if (
+      target.maxX < bounds.minX ||
+      target.minX > bounds.maxX ||
+      target.maxY < bounds.minY ||
+      target.minY > bounds.maxY
+    ) {
+      continue;
+    }
+    ids.push(target.id);
+  }
+
+  return ids;
+}
+
+function collectNativeEraserCandidateIds(
+  points: Point[],
+  radius: number,
+  targets: NativeEraserTarget[],
+) {
+  "worklet";
+  if (points.length === 0 || targets.length === 0) return [];
+  const bounds = computeBoundsForPoints(points);
+  return collectNativeCandidateIdsForBounds(
+    {
+      minX: bounds.minX - radius,
+      minY: bounds.minY - radius,
+      maxX: bounds.maxX + radius,
+      maxY: bounds.maxY + radius,
+    },
+    targets,
+  );
+}
+
 type AxisRotateHandle = {
   groupId: string;
   shapePreset: "axis-2d" | "axis-3d";
@@ -141,7 +238,8 @@ export function useCanvasInteractions({
   const [eraserCursor, setEraserCursor] = useState<Point | null>(null);
   const [lassoPath, setLassoPath] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [isInteracting] = useState(false);
+  const [previewHiddenStrokeIds, setPreviewHiddenStrokeIds] = useState<string[]>([]);
+  const [isInteracting, setIsInteracting] = useState(false);
   const [selectionPreviewOffset, setSelectionPreviewOffset] = useState({
     dx: 0,
     dy: 0,
@@ -157,14 +255,6 @@ export function useCanvasInteractions({
     eraserRadius: activeWidthRef.current / 2,
     pageIsActive: false,
   });
-  const nativeStrokePreview = useMemo<NativeStrokePreviewState>(
-    () => ({
-      path: null,
-      points: { value: [] },
-      visible: { value: false },
-    }),
-    [],
-  );
   const selectedSet = useMemo(
     () => (selectedIds.length > 0 ? new Set(selectedIds) : EMPTY_SELECTION),
     [selectedIds],
@@ -294,10 +384,50 @@ export function useCanvasInteractions({
   const moveDidMutate = useRef(false);
   const selectionClipboard = useRef<Stroke[]>([]);
   const [hasClipboard, setHasClipboard] = useState(false);
+  const nativeStrokeVisible = useSharedValue(false);
+  const nativeStrokePath = useSharedValue(Skia.Path.Make());
+  const nativeStrokePoints = useSharedValue<Point[]>([]);
+  const nativeStrokePreviewPoints = useSharedValue<Point[]>([]);
+  const nativeStrokePreviewCount = useSharedValue(0);
+  const nativeTool = useSharedValue<Tool>(tool);
+  const nativeZoom = useSharedValue(zoomRef.current);
+  const nativeCanvasWidth = useSharedValue(canvasSizeRef.current.width);
+  const nativeCanvasHeight = useSharedValue(canvasSizeRef.current.height);
+  const nativeCurrentPageIndex = useSharedValue(currentPageIndex);
+  const nativeStrokeActive = useSharedValue(false);
+  const nativeStrokeFinalizeHandled = useSharedValue(false);
+  const nativeActiveWidth = useSharedValue(activeWidthRef.current);
+  const nativeSelectedCount = useSharedValue(selectedIds.length);
+  const nativeLassoPath = useSharedValue("");
+  const nativeLassoDrawPath = useSharedValue(Skia.Path.Make());
+  const nativeLassoVisible = useSharedValue(false);
+  const nativeLassoPoints = useSharedValue<Point[]>([]);
+  const nativeEraserX = useSharedValue(0);
+  const nativeEraserY = useSharedValue(0);
+  const nativeEraserRadius = useSharedValue(activeWidthRef.current / 2);
+  const nativeEraserVisible = useSharedValue(false);
+  const nativeEraserTrailPath = useSharedValue(Skia.Path.Make());
+  const nativeEraserTrailVisible = useSharedValue(false);
+  const nativeEraserQueuedPoints = useSharedValue<Point[]>([]);
+  const nativeEraserAllPoints = useSharedValue<Point[]>([]);
+  const nativeEraserTargets = useSharedValue<NativeEraserTarget[]>([]);
+  const nativeLastEraserPoint = useSharedValue<Point | null>(null);
+  const nativeSelectionDx = useSharedValue(0);
+  const nativeSelectionDy = useSharedValue(0);
+  const nativeSelectionActive = useSharedValue(false);
+  const nativeSelectionMoving = useSharedValue(false);
+  const nativeSelectionStart = useSharedValue<Point | null>(null);
 
   useEffect(() => {
     toolRef.current = tool;
-  }, [tool]);
+    livePreviewStateRef.current.tool = tool;
+    nativeTool.value = tool;
+  }, [nativeTool, tool]);
+
+  useEffect(() => {
+    nativeActiveWidth.value = activeWidthRef.current;
+    nativeEraserRadius.value = activeWidthRef.current / 2;
+  }, [activeWidthRef, nativeActiveWidth, nativeEraserRadius, tool]);
 
   useEffect(() => {
     shapePresetRef.current = shapePreset;
@@ -308,6 +438,29 @@ export function useCanvasInteractions({
     shapeSnapEnabledRef.current = shapeSnapEnabled;
     gridStepRef.current = gridStep;
   }, [gridStep, pageTemplate, shapeSnapEnabled, snapToGrid]);
+
+  useEffect(() => {
+    nativeZoom.value = zoomRef.current;
+  }, [nativeZoom, zoomRef, currentPageIndex]);
+
+  useEffect(() => {
+    nativeCanvasWidth.value = canvasSizeRef.current.width;
+    nativeCanvasHeight.value = canvasSizeRef.current.height;
+  }, [canvasSizeRef, nativeCanvasHeight, nativeCanvasWidth]);
+
+  useEffect(() => {
+    nativeCurrentPageIndex.value = currentPageIndex;
+  }, [currentPageIndex, nativeCurrentPageIndex]);
+
+  useEffect(() => {
+    nativeEraserTargets.value = strokesRef.current.map((stroke) => ({
+      id: stroke.id,
+      minX: stroke.bbox.minX + stroke.dx,
+      minY: stroke.bbox.minY + stroke.dy,
+      maxX: stroke.bbox.maxX + stroke.dx,
+      maxY: stroke.bbox.maxY + stroke.dy,
+    }));
+  }, [currentPageIndex, nativeEraserTargets, pages, strokesRef]);
 
   const snapPoint = useCallback((point: Point, force = false) => {
     const template = pageTemplateRef.current;
@@ -326,6 +479,64 @@ export function useCanvasInteractions({
       y: Math.round(point.y / step) * step,
     };
   }, []);
+
+  const clearNativeStrokePreview = useCallback(() => {
+    nativeStrokeActive.value = false;
+    nativeStrokeFinalizeHandled.value = false;
+    nativeStrokeVisible.value = false;
+    nativeStrokePoints.value = [];
+    nativeStrokePreviewPoints.value = [];
+    nativeStrokePreviewCount.value = 0;
+    nativeStrokePath.value.reset();
+    notifyChange(nativeStrokePath);
+  }, [
+    nativeStrokeActive,
+    nativeStrokeFinalizeHandled,
+    nativeStrokePath,
+    nativeStrokePoints,
+    nativeStrokePreviewCount,
+    nativeStrokePreviewPoints,
+    nativeStrokeVisible,
+  ]);
+
+  const finalizeNativeStroke = useCallback(
+    (resolvedPoints: Point[]) => {
+      if (resolvedPoints.length < minPointsToSave) {
+        clearNativeStrokePreview();
+        return;
+      }
+
+      const d = pointsToSmoothPath(resolvedPoints);
+      if (!d.trim()) {
+        clearNativeStrokePreview();
+        return;
+      }
+
+      const stroke: Stroke = {
+        id: uid(),
+        points: resolvedPoints.map((point) => ({ ...point })),
+        segmentBBoxes: buildSegmentBBoxes(resolvedPoints),
+        d,
+        w: activeWidthRef.current,
+        c: activeColorRef.current,
+        a: activeAlphaRef.current,
+        dashed: false,
+        dx: 0,
+        dy: 0,
+        bbox: computeBBox(resolvedPoints),
+      };
+      commitCurrentPageStrokes((prev) => [...prev, stroke]);
+      clearNativeStrokePreview();
+    },
+    [
+      activeAlphaRef,
+      activeColorRef,
+      activeWidthRef,
+      clearNativeStrokePreview,
+      commitCurrentPageStrokes,
+      minPointsToSave,
+    ],
+  );
 
   const buildShapeDraft = useCallback(
     (rawStart: Point, rawEnd: Point) => {
@@ -726,7 +937,8 @@ export function useCanvasInteractions({
   useEffect(() => {
     selectedIdsRef.current = selectedIds;
     selectedSetRef.current = selectedSet;
-  }, [selectedIds, selectedSet]);
+    nativeSelectedCount.value = selectedIds.length;
+  }, [nativeSelectedCount, selectedIds, selectedSet]);
 
   useEffect(() => {
     isInfiniteCanvasRef.current = isInfiniteCanvas;
@@ -1025,8 +1237,9 @@ export function useCanvasInteractions({
     currentPoints.current = [];
     currentPreviewPoints.current = [];
     currentPathDraft.current = "";
+    clearNativeStrokePreview();
     setCurrentPath("");
-  }, []);
+  }, [clearNativeStrokePreview]);
 
   const eraseAtPoints = useCallback(
     (points: Point[]) => {
@@ -1153,6 +1366,65 @@ export function useCanvasInteractions({
     [queueEraserPoints],
   );
 
+  const eraseBatchFromNative = useCallback(
+    (points: Point[], candidateIds?: string[]) => {
+      if (points.length === 0) return;
+      if (candidateIds && candidateIds.length === 0) return;
+      const radius = activeWidthRef.current / 2;
+      const centersBounds = computeBBox(points);
+      const eraserBounds = {
+        minX: centersBounds.minX - radius,
+        minY: centersBounds.minY - radius,
+        maxX: centersBounds.maxX + radius,
+        maxY: centersBounds.maxY + radius,
+      };
+      const candidateSet =
+        candidateIds && candidateIds.length > 0 ? new Set(candidateIds) : null;
+
+      updateCurrentPageStrokes((prev) => {
+        let changed = false;
+        const next: Stroke[] = [];
+
+        for (const stroke of prev) {
+          if (candidateSet && !candidateSet.has(stroke.id)) {
+            next.push(stroke);
+            continue;
+          }
+          const strokeBounds = {
+            minX: stroke.bbox.minX + stroke.dx,
+            minY: stroke.bbox.minY + stroke.dy,
+            maxX: stroke.bbox.maxX + stroke.dx,
+            maxY: stroke.bbox.maxY + stroke.dy,
+          };
+          if (!bboxOverlap(strokeBounds, eraserBounds)) {
+            next.push(stroke);
+            continue;
+          }
+
+          const replaced = splitStrokeByEraserPathSegments(
+            stroke,
+            points,
+            radius,
+            minPointsToSave,
+          );
+          if (replaced === null) next.push(stroke);
+          else {
+            changed = true;
+            next.push(...replaced);
+          }
+        }
+
+        if (changed) eraserDidMutate.current = true;
+        return changed ? next : prev;
+      });
+    },
+    [activeWidthRef, minPointsToSave, updateCurrentPageStrokes],
+  );
+
+  const clearPreviewHiddenStrokeIds = useCallback(() => {
+    setPreviewHiddenStrokeIds((prev) => (prev.length === 0 ? prev : []));
+  }, []);
+
   const eraseAlongSegment = useCallback(
     (from: Point, to: Point) => {
       const radius = activeWidthRef.current / 2;
@@ -1205,18 +1477,22 @@ export function useCanvasInteractions({
     [commitLassoPath, lassoToPath],
   );
 
-  const finishLassoAndSelect = useCallback(() => {
-    const polygon = lassoPoints.current;
+  const finishLassoAndSelectFromPolygon = useCallback((
+    polygon: Point[],
+    candidateIds?: string[],
+  ) => {
     if (polygon.length < 3) {
       commitLassoPath("");
-      lassoPoints.current = [];
       return;
     }
 
     const polygonBounds = computeBBox(polygon);
+    const candidateSet =
+      candidateIds && candidateIds.length > 0 ? new Set(candidateIds) : null;
     const hits: string[] = [];
 
     for (const stroke of strokesRef.current) {
+      if (candidateSet && !candidateSet.has(stroke.id)) continue;
       const strokeBounds = {
         minX: stroke.bbox.minX + stroke.dx,
         minY: stroke.bbox.minY + stroke.dy,
@@ -1250,8 +1526,12 @@ export function useCanvasInteractions({
 
     setSelectedIds([...expandedHits]);
     commitLassoPath("");
-    lassoPoints.current = [];
   }, [commitLassoPath, strokesRef]);
+
+  const finishLassoAndSelect = useCallback(() => {
+    finishLassoAndSelectFromPolygon(lassoPoints.current);
+    lassoPoints.current = [];
+  }, [finishLassoAndSelectFromPolygon]);
 
   const startMoveSelection = useCallback(
     (point: Point) => {
@@ -1310,6 +1590,26 @@ export function useCanvasInteractions({
     selectionPreviewOffset,
     updateCurrentPageStrokes,
   ]);
+
+  const commitSelectionMoveByOffset = useCallback(
+    (dx: number, dy: number) => {
+      if (
+        selectedIdsRef.current.length === 0 ||
+        (Math.abs(dx) <= 0.01 && Math.abs(dy) <= 0.01)
+      ) {
+        return;
+      }
+      const nextSnapshot = updateCurrentPageStrokes((prev) =>
+        prev.map((stroke) =>
+          selectedSetRef.current.has(stroke.id)
+            ? { ...stroke, dx: stroke.dx + dx, dy: stroke.dy + dy }
+            : stroke,
+        ),
+      );
+      commitCurrentPageHistory(nextSnapshot);
+    },
+    [commitCurrentPageHistory, updateCurrentPageStrokes],
+  );
 
   const deleteSelection = useCallback(() => {
     if (selectedIdsRef.current.length === 0) return;
@@ -1609,7 +1909,8 @@ export function useCanvasInteractions({
     moveStart.current = null;
     moveBase.current = new Map();
     setSelectionPreviewOffset({ dx: 0, dy: 0 });
-  }, []);
+    clearPreviewHiddenStrokeIds();
+  }, [clearPreviewHiddenStrokeIds]);
 
   const resetForPageSwitch = useCallback(() => {
     isPointerDown.current = false;
@@ -1627,7 +1928,14 @@ export function useCanvasInteractions({
     moveBase.current = new Map();
     moveDidMutate.current = false;
     setSelectionPreviewOffset({ dx: 0, dy: 0 });
-  }, [cancelStroke, commitEraserCursor, commitLassoPath, flushQueuedEraser]);
+    clearPreviewHiddenStrokeIds();
+  }, [
+    cancelStroke,
+    clearPreviewHiddenStrokeIds,
+    commitEraserCursor,
+    commitLassoPath,
+    flushQueuedEraser,
+  ]);
 
   const handleSelectPage = useCallback(
     (index: number) => {
@@ -1654,7 +1962,8 @@ export function useCanvasInteractions({
   const clearEraserModeArtifacts = useCallback(() => {
     setSelectedIds([]);
     commitLassoPath("");
-  }, [commitLassoPath]);
+    clearPreviewHiddenStrokeIds();
+  }, [clearPreviewHiddenStrokeIds, commitLassoPath]);
 
   const clearLassoModeArtifacts = useCallback(() => {
     commitLassoPath("");
@@ -1662,6 +1971,43 @@ export function useCanvasInteractions({
     commitEraserCursor(null);
     lastEraserPoint.current = null;
   }, [commitEraserCursor, commitLassoPath]);
+
+  const finishNativeEraser = useCallback(
+    (points: Point[], candidateIds?: string[]) => {
+      if (points.length > 0) {
+        eraseBatchFromNative(points, candidateIds);
+      }
+      if (eraserDidMutate.current) {
+        commitCurrentPageHistory(strokesRef.current);
+      }
+      setIsInteracting(false);
+      eraserDidMutate.current = false;
+      lastEraserPoint.current = null;
+    },
+    [commitCurrentPageHistory, eraseBatchFromNative, strokesRef],
+  );
+
+  const finishNativeLasso = useCallback(
+    (
+      polygon: Point[],
+      dx: number,
+      dy: number,
+      movingSelection: boolean,
+      candidateIds?: string[],
+    ) => {
+      if (movingSelection) {
+        commitSelectionMoveByOffset(dx, dy);
+      } else {
+        finishLassoAndSelectFromPolygon(polygon, candidateIds);
+      }
+      setIsInteracting(false);
+    },
+    [commitSelectionMoveByOffset, finishLassoAndSelectFromPolygon],
+  );
+
+  const cancelNativeAndroidInteraction = useCallback(() => {
+    setIsInteracting(false);
+  }, []);
 
   const interactionApiRef = useRef({
     getLocalPagePoint,
@@ -1790,7 +2136,7 @@ export function useCanvasInteractions({
 
       api.extendStroke(point);
     },
-    [],
+    [activeWidthRef],
   );
 
   const endCanvasInteraction = useCallback(
@@ -1904,32 +2250,357 @@ export function useCanvasInteractions({
 
         return {
           nativeGesture: Gesture.Pan()
-            .runOnJS(true)
             .minDistance(0)
             .onStart((event) => {
-              beginCanvasInteraction(
-                pageIndex,
-                toNativeGesturePoint(event.x, event.y),
-              );
+              "worklet";
+              const point = {
+                x: event.x / nativeZoom.value,
+                y: event.y / nativeZoom.value,
+              };
+              const inBounds =
+                point.x >= 0 &&
+                point.y >= 0 &&
+                point.x <= nativeCanvasWidth.value &&
+                point.y <= nativeCanvasHeight.value;
+              const isNativeStroke =
+                Platform.OS === "android" &&
+                inBounds &&
+                pageIndex === nativeCurrentPageIndex.value &&
+                (nativeTool.value === "pen" || nativeTool.value === "highlighter");
+
+              const isNativeEraser =
+                Platform.OS === "android" &&
+                inBounds &&
+                pageIndex === nativeCurrentPageIndex.value &&
+                nativeTool.value === "eraser";
+              const isNativeLasso =
+                Platform.OS === "android" &&
+                inBounds &&
+                pageIndex === nativeCurrentPageIndex.value &&
+                nativeTool.value === "lasso";
+
+              if (!isNativeStroke) {
+                if (isNativeEraser) {
+                  nativeEraserRadius.value = nativeActiveWidth.value / 2;
+                  nativeEraserX.value = point.x;
+                  nativeEraserY.value = point.y;
+                  nativeEraserVisible.value = true;
+                  nativeEraserTrailVisible.value = true;
+                  nativeEraserTrailPath.value.reset();
+                  nativeEraserTrailPath.value.moveTo(point.x, point.y);
+                  nativeEraserTrailPath.value.lineTo(point.x + 0.01, point.y + 0.01);
+                  notifyChange(nativeEraserTrailPath);
+                  nativeEraserQueuedPoints.value = [];
+                  nativeEraserAllPoints.value = [point];
+                  nativeLastEraserPoint.value = point;
+                  runOnJS(setIsInteracting)(true);
+                  return;
+                }
+
+                if (isNativeLasso) {
+                  runOnJS(setIsInteracting)(true);
+                  if (nativeSelectedCount.value > 0) {
+                    nativeSelectionActive.value = true;
+                    nativeSelectionMoving.value = true;
+                    nativeSelectionStart.value = point;
+                    nativeSelectionDx.value = 0;
+                    nativeSelectionDy.value = 0;
+                    nativeLassoPoints.value = [];
+                    nativeLassoPath.value = "";
+                    nativeLassoVisible.value = false;
+                    nativeLassoDrawPath.value.reset();
+                    notifyChange(nativeLassoDrawPath);
+                  } else {
+                    nativeSelectionActive.value = false;
+                    nativeSelectionMoving.value = false;
+                    nativeSelectionStart.value = null;
+                    nativeLassoPoints.value = [point];
+                    nativeLassoPath.value = `M ${point.x} ${point.y} Z`;
+                    nativeLassoVisible.value = true;
+                    nativeLassoDrawPath.value.reset();
+                    nativeLassoDrawPath.value.moveTo(point.x, point.y);
+                    nativeLassoDrawPath.value.lineTo(point.x + 0.01, point.y + 0.01);
+                    notifyChange(nativeLassoDrawPath);
+                  }
+                  return;
+                }
+
+                runOnJS(beginCanvasInteraction)(
+                  pageIndex,
+                  inBounds ? point : null,
+                );
+                return;
+              }
+
+              nativeStrokeActive.value = true;
+              nativeStrokeFinalizeHandled.value = false;
+              nativeStrokeVisible.value = true;
+              nativeStrokePoints.value = [point];
+              nativeStrokePreviewPoints.value = [point];
+              nativeStrokePreviewCount.value = 1;
+              nativeStrokePath.value.reset();
+              nativeStrokePath.value.moveTo(point.x, point.y);
+              nativeStrokePath.value.lineTo(point.x + 0.01, point.y + 0.01);
+              notifyChange(nativeStrokePath);
             })
             .onUpdate((event) => {
-              moveCanvasInteraction(
-                pageIndex,
-                toNativeGesturePoint(event.x, event.y),
-              );
+              "worklet";
+              const point = {
+                x: event.x / nativeZoom.value,
+                y: event.y / nativeZoom.value,
+              };
+              const inBounds =
+                point.x >= 0 &&
+                point.y >= 0 &&
+                point.x <= nativeCanvasWidth.value &&
+                point.y <= nativeCanvasHeight.value;
+
+              if (!nativeStrokeActive.value || !inBounds) {
+                if (
+                  Platform.OS === "android" &&
+                  nativeTool.value === "eraser" &&
+                  pageIndex === nativeCurrentPageIndex.value
+                ) {
+                  if (inBounds) {
+                    nativeEraserX.value = point.x;
+                    nativeEraserY.value = point.y;
+                    nativeEraserVisible.value = true;
+
+                    const previous = nativeLastEraserPoint.value;
+                    const radius = nativeEraserRadius.value;
+                    const minGap = Math.max(4, radius * 0.5);
+                    if (!previous || dist(previous, point) >= minGap) {
+                      nativeEraserQueuedPoints.modify((value) => {
+                        value.push(point);
+                        return value;
+                      }, true);
+                      nativeEraserAllPoints.modify((value) => {
+                        value.push(point);
+                        return value;
+                      }, true);
+                      nativeEraserTrailPath.value.lineTo(point.x, point.y);
+                      notifyChange(nativeEraserTrailPath);
+                      nativeLastEraserPoint.value = point;
+                    }
+                  }
+                  return;
+                }
+
+                if (
+                  Platform.OS === "android" &&
+                  nativeTool.value === "lasso" &&
+                  pageIndex === nativeCurrentPageIndex.value
+                ) {
+                  if (!inBounds) return;
+                  if (nativeSelectionMoving.value && nativeSelectionStart.value) {
+                    nativeSelectionDx.value =
+                      point.x - nativeSelectionStart.value.x;
+                    nativeSelectionDy.value =
+                      point.y - nativeSelectionStart.value.y;
+                    return;
+                  }
+
+                  const points = nativeLassoPoints.value;
+                  const last = points[points.length - 1];
+                  if (last && dist(last, point) < NATIVE_LASSO_MIN_GAP) {
+                    return;
+                  }
+                  nativeLassoPoints.modify((value) => {
+                    value.push(point);
+                    return value;
+                  }, true);
+                  nativeLassoDrawPath.value.lineTo(point.x, point.y);
+                  notifyChange(nativeLassoDrawPath);
+                  const nextPoints = nativeLassoPoints.value;
+                  let nextPath = `M ${nextPoints[0].x} ${nextPoints[0].y} `;
+                  for (let i = 1; i < nextPoints.length; i++) {
+                    const nextPoint = nextPoints[i];
+                    nextPath += `L ${nextPoint.x} ${nextPoint.y} `;
+                  }
+                  nativeLassoPath.value = `${nextPath}Z`;
+                  return;
+                }
+
+                runOnJS(moveCanvasInteraction)(pageIndex, inBounds ? point : null);
+                return;
+              }
+
+              const points = nativeStrokePoints.value;
+              const last = points[points.length - 1];
+              if (!last || dist(last, point) < minDistPx) return;
+
+              const smoothed = smoothTowards(last, point, strokeSmoothingAlpha);
+              const segmentLength = dist(last, smoothed);
+              const segmentStep = Math.max(1, minDistPx * 0.75);
+              const steps = Math.max(1, Math.ceil(segmentLength / segmentStep));
+              const previewStep = Math.max(3.5, minDistPx * 2);
+
+              for (let i = 1; i <= steps; i++) {
+                const nextPoint = lerpPoint(last, smoothed, i / steps);
+                nativeStrokePoints.modify((value) => {
+                  value.push(nextPoint);
+                  return value;
+                }, true);
+
+                const previewPoints = nativeStrokePreviewPoints.value;
+                const previewLast = previewPoints[previewPoints.length - 1];
+                if (previewLast && dist(previewLast, nextPoint) < previewStep) {
+                  continue;
+                }
+
+                nativeStrokePreviewPoints.modify((value) => {
+                  value.push(nextPoint);
+                  return value;
+                }, true);
+
+                const nextPreviewPoints = nativeStrokePreviewPoints.value;
+                const count = nextPreviewPoints.length;
+                if (count === 2) {
+                  nativeStrokePath.value.reset();
+                  nativeStrokePath.value.moveTo(
+                    nextPreviewPoints[0].x,
+                    nextPreviewPoints[0].y,
+                  );
+                  nativeStrokePath.value.lineTo(
+                    nextPreviewPoints[1].x,
+                    nextPreviewPoints[1].y,
+                  );
+                  nativeStrokePreviewCount.value = count;
+                  notifyChange(nativeStrokePath);
+                  continue;
+                }
+
+                if (count > nativeStrokePreviewCount.value) {
+                  const latest = nextPreviewPoints[count - 1];
+                  nativeStrokePath.value.lineTo(latest.x, latest.y);
+                  nativeStrokePreviewCount.value = count;
+                  notifyChange(nativeStrokePath);
+                }
+              }
             })
             .onEnd(() => {
-              endCanvasInteraction(pageIndex);
+              "worklet";
+              if (nativeStrokeActive.value) {
+                nativeStrokeFinalizeHandled.value = true;
+                nativeStrokeActive.value = false;
+                runOnJS(finalizeNativeStroke)(
+                  nativeStrokePoints.value.map((point) => ({
+                    x: point.x,
+                    y: point.y,
+                  })),
+                );
+                return;
+              }
+              if (
+                Platform.OS === "android" &&
+                nativeTool.value === "eraser" &&
+                pageIndex === nativeCurrentPageIndex.value
+              ) {
+                const remainingPoints = nativeEraserAllPoints.value.map((point) => ({
+                  x: point.x,
+                  y: point.y,
+                }));
+                const candidateIds = collectNativeEraserCandidateIds(
+                  remainingPoints,
+                  nativeEraserRadius.value,
+                  nativeEraserTargets.value,
+                );
+                nativeEraserQueuedPoints.value = [];
+                nativeEraserAllPoints.value = [];
+                nativeLastEraserPoint.value = null;
+                nativeEraserVisible.value = false;
+                nativeEraserTrailVisible.value = false;
+                nativeEraserTrailPath.value.reset();
+                notifyChange(nativeEraserTrailPath);
+                runOnJS(finishNativeEraser)(remainingPoints, candidateIds);
+                return;
+              }
+              if (
+                Platform.OS === "android" &&
+                nativeTool.value === "lasso" &&
+                pageIndex === nativeCurrentPageIndex.value
+              ) {
+                const polygon = nativeLassoPoints.value.map((point) => ({
+                  x: point.x,
+                  y: point.y,
+                }));
+                const candidateIds =
+                  nativeSelectionMoving.value || polygon.length === 0
+                    ? []
+                    : collectNativeCandidateIdsForBounds(
+                        computeBoundsForPoints(polygon),
+                        nativeEraserTargets.value,
+                      );
+                const dx = nativeSelectionDx.value;
+                const dy = nativeSelectionDy.value;
+                const movingSelection = nativeSelectionMoving.value;
+                nativeLassoPoints.value = [];
+                nativeLassoPath.value = "";
+                nativeLassoVisible.value = false;
+                nativeLassoDrawPath.value.reset();
+                notifyChange(nativeLassoDrawPath);
+                nativeSelectionStart.value = null;
+                nativeSelectionMoving.value = false;
+                nativeSelectionActive.value = false;
+                nativeSelectionDx.value = 0;
+                nativeSelectionDy.value = 0;
+                runOnJS(finishNativeLasso)(
+                  polygon,
+                  dx,
+                  dy,
+                  movingSelection,
+                  candidateIds,
+                );
+                return;
+              }
+              runOnJS(endCanvasInteraction)(pageIndex);
             })
             .onFinalize(() => {
-              cancelCanvasInteraction(pageIndex);
+              "worklet";
+              if (nativeStrokeFinalizeHandled.value) {
+                nativeStrokeFinalizeHandled.value = false;
+                return;
+              }
+              if (nativeStrokeActive.value) {
+                nativeStrokeActive.value = false;
+                runOnJS(cancelStroke)();
+                return;
+              }
+              if (
+                Platform.OS === "android" &&
+                (nativeTool.value === "eraser" || nativeTool.value === "lasso")
+              ) {
+                nativeEraserQueuedPoints.value = [];
+                nativeEraserAllPoints.value = [];
+                nativeLastEraserPoint.value = null;
+                nativeEraserVisible.value = false;
+                nativeEraserTrailVisible.value = false;
+                nativeEraserTrailPath.value.reset();
+                notifyChange(nativeEraserTrailPath);
+                nativeLassoPoints.value = [];
+                nativeLassoPath.value = "";
+                nativeLassoVisible.value = false;
+                nativeLassoDrawPath.value.reset();
+                notifyChange(nativeLassoDrawPath);
+                nativeSelectionStart.value = null;
+                nativeSelectionMoving.value = false;
+                nativeSelectionActive.value = false;
+                nativeSelectionDx.value = 0;
+                nativeSelectionDy.value = 0;
+                runOnJS(cancelNativeAndroidInteraction)();
+                return;
+              }
+              runOnJS(cancelCanvasInteraction)(pageIndex);
             }),
         };
       }),
     [
       beginCanvasInteraction,
+      cancelNativeAndroidInteraction,
       cancelCanvasInteraction,
       endCanvasInteraction,
+      finishNativeEraser,
+      finishNativeLasso,
       moveCanvasInteraction,
       pages,
       toNativeGesturePoint,
@@ -1943,17 +2614,63 @@ export function useCanvasInteractions({
     [],
   );
 
+  const nativeStrokePreview = useMemo<NativeStrokePreviewState>(
+    () => ({
+      path: nativeStrokePath,
+      points: nativeStrokePreviewPoints,
+      visible: nativeStrokeVisible,
+    }),
+    [nativeStrokePath, nativeStrokePreviewPoints, nativeStrokeVisible],
+  );
+
+  const nativeInteractionPreview = useMemo<NativeInteractionPreviewState>(
+    () => ({
+      lassoPath: nativeLassoPath,
+      lassoDrawPath: nativeLassoDrawPath,
+      lassoVisible: nativeLassoVisible,
+      eraserX: nativeEraserX,
+      eraserY: nativeEraserY,
+      eraserRadius: nativeEraserRadius,
+      eraserVisible: nativeEraserVisible,
+      eraserTrailPath: nativeEraserTrailPath,
+      eraserTrailVisible: nativeEraserTrailVisible,
+    }),
+    [
+      nativeEraserTrailPath,
+      nativeEraserTrailVisible,
+      nativeLassoDrawPath,
+      nativeEraserRadius,
+      nativeEraserVisible,
+      nativeEraserX,
+      nativeEraserY,
+      nativeLassoPath,
+      nativeLassoVisible,
+    ],
+  );
+
+  const nativeSelectionPreview = useMemo<NativeSelectionPreviewState>(
+    () => ({
+      dx: nativeSelectionDx,
+      dy: nativeSelectionDy,
+      active: nativeSelectionActive,
+    }),
+    [nativeSelectionActive, nativeSelectionDx, nativeSelectionDy],
+  );
+
   return {
     currentPath,
     eraserCursor,
     lassoPath,
     selectedIds,
     selectedSet,
+    previewHiddenStrokeIds,
     selectionPreviewOffset,
     selectionBounds,
     isInteracting,
     livePreviewStateRef,
     nativeStrokePreview,
+    nativeInteractionPreview,
+    nativeSelectionPreview,
     acknowledgeActivePageRender,
     isPointerDown,
     pageHandlersByPage,

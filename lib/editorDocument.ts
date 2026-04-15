@@ -64,6 +64,29 @@ function computeBBox(points: Point[]) {
   return { minX, minY, maxX, maxY };
 }
 
+function sanitizeSegmentBBoxes(
+  raw: unknown,
+): { minX: number; minY: number; maxX: number; maxY: number }[] | null {
+  if (!Array.isArray(raw)) return null;
+
+  const safe = raw
+    .map((bbox: any) => ({
+      minX: Number(bbox?.minX),
+      minY: Number(bbox?.minY),
+      maxX: Number(bbox?.maxX),
+      maxY: Number(bbox?.maxY),
+    }))
+    .filter(
+      (bbox) =>
+        Number.isFinite(bbox.minX) &&
+        Number.isFinite(bbox.minY) &&
+        Number.isFinite(bbox.maxX) &&
+        Number.isFinite(bbox.maxY),
+    );
+
+  return safe.length > 0 ? safe : null;
+}
+
 function uid() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
@@ -144,7 +167,8 @@ export function sanitizeStroke(raw: any): Stroke | null {
   return {
     id: typeof raw.id === "string" && raw.id ? raw.id : uid(),
     points: safePoints,
-    segmentBBoxes: buildSegmentBBoxes(safePoints),
+    segmentBBoxes:
+      sanitizeSegmentBBoxes(raw.segmentBBoxes) ?? buildSegmentBBoxes(safePoints),
     d,
     w: Number.isFinite(raw.w) ? raw.w : 4,
     c: typeof raw.c === "string" ? raw.c : "#111111",

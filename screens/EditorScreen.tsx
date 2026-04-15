@@ -536,11 +536,14 @@ export default function EditorScreen() {
     lassoPath,
     selectedIds,
     selectedSet,
+    previewHiddenStrokeIds,
     selectionPreviewOffset,
     selectionBounds,
     isInteracting,
     livePreviewStateRef,
     nativeStrokePreview,
+    nativeInteractionPreview,
+    nativeSelectionPreview,
     acknowledgeActivePageRender,
     isPointerDown,
     pageHandlersByPage,
@@ -641,7 +644,25 @@ export default function EditorScreen() {
     Platform.OS === "android" &&
     isInteracting &&
     (tool === "eraser" || tool === "lasso" || tool === "hand");
+  const hidePageInteractiveOverlays =
+    Platform.OS === "android" &&
+    isInteracting &&
+    (tool === "eraser" || tool === "hand");
   const showTopChrome = !isAndroidInteractionMode;
+  const previewHiddenStrokeSet = useMemo(
+    () =>
+      previewHiddenStrokeIds.length > 0
+        ? new Set(previewHiddenStrokeIds)
+        : EMPTY_SELECTED_SET,
+    [previewHiddenStrokeIds],
+  );
+  const visibleStrokes = useMemo(
+    () =>
+      previewHiddenStrokeSet === EMPTY_SELECTED_SET
+        ? strokes
+        : strokes.filter((stroke) => !previewHiddenStrokeSet.has(stroke.id)),
+    [previewHiddenStrokeSet, strokes],
+  );
 
   useEffect(() => {
     perfRef.current = {
@@ -1434,9 +1455,8 @@ export default function EditorScreen() {
                 }
           }
         >
-          {pages.map((pageStrokes, pageIndex) => {
-            const pageIsActive = pageIndex === currentPageIndex;
-            const renderStrokes = pageIsActive ? strokes : pageStrokes;
+          {(() => {
+            const pageIndex = currentPageIndex;
             const pageBackground = pageBackgrounds[pageIndex] ?? {
               ...EMPTY_PAGE_BACKGROUND,
             };
@@ -1446,37 +1466,34 @@ export default function EditorScreen() {
                 key={`page-${pageIndex}`}
                 zoom={zoom}
                 pageIndex={pageIndex}
-                pageIsActive={pageIsActive}
+                pageIsActive
                 noteKind={noteKind}
                 pageWidth={canvasSize.width}
                 pageHeight={canvasSize.height}
                 boardBackgroundStyle={boardBackgroundStyle}
                 pageTemplate={pageTemplate}
                 pageBackground={pageBackground}
-                renderStrokes={renderStrokes}
+                renderStrokes={visibleStrokes}
                 textItems={textItems}
-                selectedSet={pageIsActive ? selectedSet : EMPTY_SELECTED_SET}
-                selectionPreviewOffset={
-                  pageIsActive ? selectionPreviewOffset : ZERO_SELECTION_OFFSET
-                }
-                selectionBounds={pageIsActive ? selectionBounds : null}
-                selectionMenu={
-                  pageIsActive && !isAndroidInteractionMode ? selectionMenu : null
-                }
-                currentPath={pageIsActive ? currentPath : ""}
+                selectedSet={selectedSet}
+                selectionPreviewOffset={selectionPreviewOffset}
+                selectionBounds={selectionBounds}
+                selectionMenu={!hidePageInteractiveOverlays ? selectionMenu : null}
+                currentPath={currentPath}
                 activeColor={activeColor}
                 activeWidth={activeWidth}
                 activeOpacity={activeOpacity}
-                lassoPath={pageIsActive ? lassoPath : ""}
+                lassoPath={lassoPath}
                 tool={tool}
-                eraserCursor={pageIsActive ? eraserCursor : null}
+                eraserCursor={eraserCursor}
                 eraserRadius={eraserRadius}
+                eraserPreviewColor={noteKind === "infinite" ? "#F5EFE6" : "#FFFDF8"}
                 pageHandlers={pageHandlersByPage[pageIndex]}
                 textMoveEnabled={tool === "text" || tool === "hand"}
                 onMoveTextItem={(itemId, point) =>
                   moveTextItem(pageIndex, itemId, point)
                 }
-                axisRotateHandles={pageIsActive ? activeAxisRotateHandles : null}
+                axisRotateHandles={activeAxisRotateHandles}
                 onAxisRotateStart={(axisRole) => {
                   const handle = activeAxisRotateHandles?.find(
                     (item) => item.axisRole === axisRole,
@@ -1485,13 +1502,15 @@ export default function EditorScreen() {
                 }}
                 onAxisRotate={rotateAxisToPoint}
                 onAxisRotateEnd={endAxisRotation}
-                hideInteractiveOverlays={isAndroidInteractionMode}
+                hideInteractiveOverlays={hidePageInteractiveOverlays}
                 onActivePageRender={handleActivePageRender}
                 livePreviewStateRef={livePreviewStateRef}
                 nativeStrokePreview={nativeStrokePreview}
+                nativeInteractionPreview={nativeInteractionPreview}
+                nativeSelectionPreview={nativeSelectionPreview}
               />
             );
-          })}
+          })()}
         </View>
       </View>
 

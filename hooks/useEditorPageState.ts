@@ -32,7 +32,9 @@ function cloneStrokeSnapshot(strokes: Stroke[]): Stroke[] {
 function buildInitialHistories(pages: Stroke[][]): PageHistoryState[] {
   const safePages = pages.length > 0 ? pages : [[]];
   return safePages.map((page) => ({
-    entries: [cloneStrokeSnapshot(page)],
+    // Seed history with the loaded snapshot by reference; we clone lazily
+    // when committing or restoring history entries.
+    entries: [page],
     index: 0,
   }));
 }
